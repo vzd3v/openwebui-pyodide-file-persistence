@@ -30,3 +30,7 @@ standalone open-source project. Use synthetic data and neutral examples only.
 Do not include deployment-specific addresses, credentials, logs or configuration.
 
 See [AGENTS.md](AGENTS.md) for repository rules.
+
+## License
+
+[MIT](LICENSE).
