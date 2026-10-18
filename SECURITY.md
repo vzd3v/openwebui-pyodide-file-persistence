@@ -1,7 +1,23 @@
-# Security boundaries
+# Security
+
+## Reporting a vulnerability
+
+Use **Report a vulnerability** in the repository's Security tab when private
+reporting is available. If it is unavailable, open an issue asking only for a
+private security contact; do not include vulnerability details in that issue.
+This follows [GitHub's private reporting guidance](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately).
+
+In the private report, include the affected revision, Open WebUI version, required
+permissions, impact and a synthetic reproduction. Do not send real credentials,
+personal data or production document contents. Avoid testing exploits against
+instances you do not own or have permission to test.
+
+## Compatibility status
 
 Pre-release: no deployment/provider matrix has completed acceptance testing.
 Use synthetic documents for qualification.
+
+## Trust and data boundaries
 
 - Open WebUI owns identity, chat-write/file-access grants and storage. Rebind
   injected context to live server records; internal calls do not run HTTP
@@ -13,9 +29,10 @@ Use synthetic documents for qualification.
 - Existing same-origin Pyodide trust remains; browser persistence is unchanged.
   Disabling it is not a substitute for safe migration and recovery.
 - Stock frontend DevTools logs can contain native payloads/results. This Tool
-  does not patch that behavior or promise browser-console secrecy. Backend
-  logs contain only structured metadata, no code/bytes/envelopes/exception
-  reprs or tracebacks containing DB/provider payloads.
+  does not patch that behavior or promise browser-console secrecy. Its own
+  backend logger emits structured metadata, not code, file bytes, envelopes or
+  exception tracebacks containing DB/provider payloads. This is not a guarantee
+  about logging elsewhere in Open WebUI or its configured providers.
 - Bytes are stored without extraction/indexing/inline HTML. Downloads use
   normal authenticated content routes, not public/signed URLs.
 - Actual decoded/serialized bounds apply below stock 16 MiB callbacks and
@@ -28,7 +45,5 @@ Use synthetic documents for qualification.
   vault. Deletion applies. No pruning/GC; failed provider attempts can leave
   unacknowledged objects.
 - `outputs/` is agent intent, not secret classification. Review before sharing.
-
-Report vulnerabilities privately using GitHub security reporting if enabled,
-otherwise contact the maintainer. Never post credentials, real document bytes
-or a working exploit against a live instance in a public issue.
+- Captured stdout/stderr are returned as bounded Tool text to the assistant;
+  printing sensitive content can disclose it even when files remain private.

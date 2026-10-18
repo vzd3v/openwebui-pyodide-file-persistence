@@ -1,51 +1,38 @@
-# Repository Instructions
+# Agent Instructions
 
-This is an independent open-source project. Every tracked file and commit must
-be suitable for eventual public distribution. No private infrastructure facts,
-deployment identifiers, organization-specific configuration, credentials,
-conversations or raw operational artifacts belong in this repository.
+Read [README.md](README.md) for project scope and compatibility status, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the branch, pull-request and check workflow.
 
-Optional maintainer-only instructions: read [agents.local.md](agents.local.md)
-when present. That file is intentionally untracked and must not be added to git.
+Optional local instructions: read [agents.local.md](agents.local.md) when present.
+It is intentionally untracked; never force-add it.
 
-## Product boundaries
+## Working on changes
 
-- Open WebUI owns users, access control and final file storage. Do not introduce
-  a parallel authentication system or execute user Python in its server process.
-- Preserve existing browser persistence. Changing that setting requires separate
-  approval after verified saving, restoration, migration and rollback.
-- Treat browser results as untrusted user uploads, never attested model output.
-- Keep private workspace recovery separate from intentionally published outputs.
-- Do not patch or monkeypatch Open WebUI to conceal an unsupported integration.
+- Use a short-lived branch and a pull request targeting `main`. Do not push
+  directly to `main` or bypass failing checks. Keep commits focused and preserve
+  unrelated work in the checkout.
+- Keep documentation in English. Use synthetic fixtures; never commit real
+  credentials, personal data, conversations or deployment-specific configuration.
+- Update documentation when behavior changes. Distinguish automated tests,
+  real-browser observations and unverified compatibility claims.
+- Follow [verification instructions](docs/dev/testing.md). Report skipped checks
+  explicitly; simulated host callbacks are not browser acceptance evidence.
+- Edit source modules, not generated `dist/` files. Build deterministically with
+  `python3 scripts/build_tool.py --check`; do not commit generated artifacts.
 
-## Workflow
+## Design constraints
 
-- English documentation, neutral examples and synthetic fixtures only.
-- Work on `main`; commit logical tasks without unrelated changes.
-- Internal specifications, implementation plans and reviews are maintained
-  outside this repository. Do not commit them, retain them in git history or
-  link private planning documents from public documentation.
-- Do not implement before specification and plan gates pass and implementation
-  is approved. Do not change repository visibility without explicit approval.
-- Verify claims against the supported upstream versions. Document limitations;
-  never turn an untested assumption into a compatibility promise.
-- Reuse public interfaces and configured storage providers. Isolate necessary
-  version-sensitive Open WebUI calls behind a compatibility adapter.
-- Source modules produce one self-contained deployable Tool; generated outputs
-  must be reproducible. Do not retain example-only code or throwaway scaffolding.
-- Keep tests focused on public behavior and critical persistence/security
-  invariants. Run formatting, lint, strict type checks and relevant tests before
-  claiming a code change is complete.
-- Keep internal deployment, access and acceptance evidence outside this repo.
+- Keep Python execution in the browser. Do not add a server-side executor,
+  separate service, authentication system or Open WebUI patch.
+- Open WebUI owns identity, access control, configured storage and downloads.
+  Keep version-sensitive integration in `openwebui_adapter.py`.
+- Treat browser bytes as untrusted uploads, not attested model output.
+- Preserve browser persistence and existing saved data. Do not silently delete,
+  recreate or migrate acknowledged files or coordination state.
+- Keep private workspace checkpoints separate from issued chat attachments.
+  Do not publish unchanged inherited files or error-produced files implicitly.
+- Durable database receipts and compare-and-set control shared mutations;
+  process-local locks are not cross-worker authority.
 
-## Implementation foundations
-
-- In-process native extension; initial target 0.12.2, host Python 3.11/3.12,
-  browser Pyodide, existing configured storage and DB.
-- Multi-user actor/chat state; shared PostgreSQL coordination, disk SQLite only
-  after locking tests. No RPS/concurrency target or separate DB per replica.
-- No background jobs/queues/second auth. Host native callback transport only.
-  Durable receipts are critical state; local locks are never authority.
-- All upstream imports/protocol casts stay in `openwebui_adapter.py`.
-- [Architecture](docs/dev/architecture.md), [checks/budgets](docs/dev/testing.md).
-- Build: `uv run python scripts/build_tool.py --check`; never track `dist/`.
+See [architecture](docs/dev/architecture.md) and [security boundaries](SECURITY.md)
+before changing persistence, concurrency or host integration.

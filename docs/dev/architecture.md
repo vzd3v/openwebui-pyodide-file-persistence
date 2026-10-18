@@ -4,6 +4,12 @@ One in-process native Tool; no separate server/executor, frontend patch or
 custom route. Open WebUI owns identities, grants, ordinary File records,
 configured provider bytes and downloads. Browser data is untrusted input.
 
+The current adapter accepts Open WebUI 0.12.2 on host Python 3.11/3.12. PostgreSQL
+coordinates workers sharing one host database; SQLite requires a local disk DB
+with the qualified locking behavior. Separate DBs per replica and network-file
+SQLite do not provide this coordination. Compatibility and provider qualification
+status are documented in [README](../../README.md), not inferred from the schema.
+
 | Module | Responsibility |
 | --- | --- |
 | `contracts.py` | Strict actions, limits, envelopes, receipts and path validation |
@@ -21,7 +27,8 @@ no upstream schema changes or foreign keys:
   acknowledged operation ID.
 - `pyodide_file_saver_operation`: server operation ID, actor/chat/message,
   base revision, state version, reserved checkpoint ID, receipt JSON/timestamps;
-  actor/chat index. Receipts store hashes/lengths/IDs, not file bytes.
+  actor/chat index. Receipts store file hashes/lengths/IDs and bounded captured
+  text, not file payloads.
 
 Files have no workspace uniqueness, CAS or retry ledger. Fake metadata-only
 Files would clutter normal file interfaces and 404 on their own content route.

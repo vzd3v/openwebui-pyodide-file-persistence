@@ -1,4 +1,9 @@
-# Files and recovery
+# Using saved files
+
+Select the Tool for a chat/model configured for native function calling and
+Pyodide, as described in [installation](../ops/install.md). The assistant handles
+managed execution and recovery calls; you normally just ask for the document.
+The project is experimental: [sharing/provider qualification is incomplete](../../README.md).
 
 Ask for a document normally. The agent works with relative paths in a managed
 directory. `outputs/` means **issued to the user**, not “finished”: a requested
@@ -8,19 +13,26 @@ The Tool cannot determine sensitivity or whether the agent chose correctly.
 Successful managed execution saves a private checkpoint and automatically
 publishes new/byte-changed issued files. The assistant must include returned
 Markdown links in its answer. Cards are optional convenience, not a substitute.
-Authorized shared-chat recipients use the same inline links without Controls.
-Anonymous download is not promised; normal host authentication/access applies.
+Links use Open WebUI's authenticated file routes, not browser-local URLs. Sharing
+is intended to use those same inline links without Controls. Before relying on it,
+verify a fresh authorized recipient on your instance; end-to-end sharing is not
+fully qualified. Recipients must sign in and have normal host access. Anonymous
+download is not supported.
 
 After **workspace saved**, open the chat in another authenticated browser and
 ask to modify the result. The next managed execution restores automatically.
 Inputs use `inputs/<file-id>/<name>`; identical names stay distinct and saved
-edits are not replaced by original uploads. Variables/packages are not saved.
+edits are not replaced by original uploads.
 Private checkpoints remain normal owner/admin-visible, deletable Files.
 
-## Incomplete work
+## When something goes wrong
 
-- **Python error:** written files are privately checkpointed if transfer/saving
-  succeed. Error-produced outputs are not later published by unrelated success.
+Ask the assistant to report the actual Tool result rather than inventing a link
+or rerunning a program automatically. For recovery, the assistant can use the
+following `execute_code` actions; they are Tool parameters, not browser commands.
+
+- **Ordinary Python error:** written files are privately checkpointed if transfer
+  and saving succeed. Error-produced outputs are not later published by unrelated success.
 - **Publication interrupted:** `execute_code` with `action="retry"`, the returned
   `operation_id` and no code finishes from saved bytes, never rerunning Python.
 - **Response lost:** `action="status"` with no code lists recent historical
@@ -36,6 +48,13 @@ Private checkpoints remain normal owner/admin-visible, deletable Files.
   may reject publishing them as ordinary uploads. Publication stays incomplete;
   the Tool does not bypass that policy or replace the bytes.
 
-Reload/closure before transfer can lose new work; only acknowledged checkpoints
-are promised recoverable. Timeout does not confirm worker termination. Do not
-use a new execution as an automatic retry. No automatic pruning is performed.
+Reload/closure before transfer can lose new work. Recovery requires an acknowledged
+checkpoint that still exists and is accessible. Timeout does not confirm worker
+termination. Do not use a new execution as an automatic retry. No automatic pruning
+is performed.
+
+## What is not saved
+
+Only files in the managed workspace are checkpointed. Python variables, installed
+packages, manual code-block work and unrelated browser files are not imported.
+Existing browser persistence remains enabled and separate from this Tool.
