@@ -1,0 +1,23 @@
+# Local maintainer policy and developer state
+/agents.local.md
+# Internal planning belongs outside this repository
+/docs/specs/
+/docs/plans/
+/docs/reviews/
+/specs/
+/plans/
+/reviews/
+/.env
+/.env.*
+!/.env.example
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+__pycache__/
+*.py[cod]
+/dist/
+/build/
+/*.egg-info/
+/artifacts/
+/test-results/
+/playwright-report/
