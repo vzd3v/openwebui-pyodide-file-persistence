@@ -1,0 +1,50 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: saver
+          POSTGRES_PASSWORD: synthetic-test-password
+          POSTGRES_DB: saver_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SAVER_TEST_DATABASE_URL: postgresql+psycopg://saver:synthetic-test-password@localhost:5432/saver_test
+      DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff format --check src scripts tests
+      - run: uv run ruff check src scripts tests
+      - run: uv run basedpyright
+      - run: uv run python scripts/build_tool.py --check
+      - name: Maintenance budgets
+        run: |
+          if git cat-file -e "$DIFF_BASE^{commit}" 2>/dev/null; then
+            uv run python scripts/check_budgets.py --base "$DIFF_BASE"
+          else
+            uv run python scripts/check_budgets.py
+          fi
+      - run: timeout 30s uv run pytest -q -m 'not integration'
+      - run: timeout 300s uv run pytest -q -m integration

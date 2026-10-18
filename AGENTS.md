@@ -37,3 +37,15 @@ when present. That file is intentionally untracked and must not be added to git.
   invariants. Run formatting, lint, strict type checks and relevant tests before
   claiming a code change is complete.
 - Keep internal deployment, access and acceptance evidence outside this repo.
+
+## Implementation foundations
+
+- In-process native extension; initial target 0.12.2, host Python 3.11/3.12,
+  browser Pyodide, existing configured storage and DB.
+- Multi-user actor/chat state; shared PostgreSQL coordination, disk SQLite only
+  after locking tests. No RPS/concurrency target or separate DB per replica.
+- No background jobs/queues/second auth. Host native callback transport only.
+  Durable receipts are critical state; local locks are never authority.
+- All upstream imports/protocol casts stay in `openwebui_adapter.py`.
+- [Architecture](docs/dev/architecture.md), [checks/budgets](docs/dev/testing.md).
+- Build: `uv run python scripts/build_tool.py --check`; never track `dist/`.
