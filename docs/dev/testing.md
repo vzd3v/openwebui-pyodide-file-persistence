@@ -1,9 +1,9 @@
 # Development and verification
 
 Set up the checkout as described in [CONTRIBUTING](../../CONTRIBUTING.md).
-Commands below use a POSIX shell. CI runs on Ubuntu with Python 3.11 and 3.12.
+Commands below use a POSIX shell. CI runs on Ubuntu with Python 3.11–3.15.
 
-Use Python 3.11/3.12 and the committed lockfile:
+Use Python 3.11 or newer and the committed lockfile:
 
 ```sh
 uv sync --locked
@@ -19,6 +19,12 @@ Unit checks do not require an Open WebUI installation. Integration fixtures use
 temporary **disk** SQLite and an isolated PostgreSQL database selected by
 `SAVER_TEST_DATABASE_URL`. Without that variable, PostgreSQL cases are **skipped**;
 passing SQLite alone is not a full integration run. CI supplies PostgreSQL 17.
+Create disposable PostgreSQL databases with UTF-8 encoding (for example,
+`createdb --template=template0 --encoding=UTF8 saver_test`); do not select a
+maintenance database whose SQL_ASCII encoding can fail before Tool code runs.
+Python 3.15 uses Psycopg's pure-Python implementation with system `libpq` because
+the pinned binary distribution has no 3.15 wheel. Install `libpq` through your
+platform package manager before running PostgreSQL tests on that interpreter.
 
 ## Disposable PostgreSQL
 
@@ -74,6 +80,10 @@ conversations out of commits and issue/PR reports. Publish only sanitized,
 synthetic reproduction steps and clearly scoped observations.
 
 Automated transfer/boundary tests and real disk SQLite/PostgreSQL tests are
-present. Synthetic external-host and callback fixtures are not live Open WebUI
-or browser proof. Real-browser/provider acceptance remains pending; do not
-advertise a supported deployment/provider or release yet.
+present. CI also executes the generated single-file Tool through initialization,
+publication and fresh restoration against a synthetic external host with real
+disk SQLite/PostgreSQL. Loading its class/schema alone is not execution proof.
+Synthetic external-host and callback fixtures are not live Open WebUI
+or browser proof. See the [qualification matrix](compatibility.md) for actual
+upstream contract tests versus prior-artifact browser observations. A new build
+does not inherit the old artifact's browser acceptance.

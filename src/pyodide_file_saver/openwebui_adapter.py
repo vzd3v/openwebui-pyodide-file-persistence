@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import io
 import mimetypes
 import time
@@ -13,7 +14,9 @@ from typing import BinaryIO, Literal, Protocol, cast
 from uuid import uuid4
 
 from pydantic import JsonValue
-from sqlalchemy import MetaData, Table, select, update
+from sqlalchemy import JSON, Connection, Integer, MetaData, String, Table, select, update
+from sqlalchemy import inspect as inspect_sqlalchemy
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .contracts import (
@@ -36,14 +39,6 @@ class HostUser(Protocol):
     role: str
 
 
-class HostBase(Protocol):
-    metadata: MetaData
-
-
-class HostModel(Protocol):
-    __table__: Table
-
-
 class HostUsers(Protocol):
     async def get_user_by_id(self, id: str, db: AsyncSession | None = None) -> HostUser | None: ...
 
@@ -57,17 +52,6 @@ class HostChats(Protocol):
         *,
         permission: Literal["read", "write"] = "read",
         chat: object = None,
-    ) -> object: ...
-
-
-class HostMessages(Protocol):
-    async def upsert_message(
-        self,
-        message_id: str,
-        chat_id: str,
-        user_id: str,
-        data: dict[str, JsonValue],
-        db: AsyncSession | None = None,
     ) -> object: ...
 
 
@@ -94,7 +78,10 @@ class HostFileAccess(Protocol):
 
 def host_attribute(module: str, attribute: str) -> object:
     # All untyped host objects are narrowed here, not throughout orchestration.
-    return cast(object, getattr(importlib.import_module(module), attribute))
+    try:
+        return cast(object, getattr(importlib.import_module(module), attribute))
+    except (ImportError, AttributeError) as error:
+        raise SaverError(f"Missing host capability: {module}.{attribute}") from error
 
 
 def json_object(value: object) -> dict[str, JsonValue]:
@@ -112,54 +99,186 @@ def require_string(value: object) -> str:
 
 class OpenWebUIAdapter:
     def __init__(self) -> None:
-        version = host_attribute("open_webui.env", "VERSION")
-        if version != "0.12.2":
-            raise SaverError(
-                "This adapter requires Open WebUI 0.12.2; other releases are unverified"
-            )
-        self.engine = cast(AsyncEngine, host_attribute("open_webui.internal.db", "async_engine"))
-        base = cast(HostBase, host_attribute("open_webui.internal.db", "Base"))
-        schema = base.metadata.schema
+        engine = host_attribute("open_webui.internal.db", "async_engine")
+        if not isinstance(engine, AsyncEngine):
+            raise SaverError("Incompatible host async database engine")
+        self.engine = engine
+        base = host_attribute("open_webui.internal.db", "Base")
+        metadata = cast(object, getattr(base, "metadata", None))
+        if not isinstance(metadata, MetaData):
+            raise SaverError("Incompatible host database metadata")
+        schema = metadata.schema
         self.state = WorkspaceState(self.engine, schema)
         self.files = self._table(
-            "open_webui.models.files", "File", {"id", "user_id", "path", "hash"}
+            "open_webui.models.files",
+            "File",
+            {
+                "id": "text",
+                "user_id": "text",
+                "path": "text",
+                "hash": "text",
+                "filename": "text",
+                "data": "json",
+                "meta": "json",
+                "created_at": "integer",
+                "updated_at": "integer",
+            },
+            insert=True,
         )
-        self.chats = self._table("open_webui.models.chats", "Chat", {"id", "user_id", "chat"})
+        self.chats = self._table(
+            "open_webui.models.chats",
+            "Chat",
+            {"id": "text", "user_id": "text", "chat": "json", "updated_at": "integer"},
+        )
         self.chat_files = self._table(
-            "open_webui.models.chats", "ChatFile", {"id", "chat_id", "file_id", "message_id"}
+            "open_webui.models.chats",
+            "ChatFile",
+            {
+                "id": "text",
+                "user_id": "text",
+                "chat_id": "text",
+                "file_id": "text",
+                "message_id": "text",
+                "created_at": "integer",
+                "updated_at": "integer",
+            },
+            insert=True,
         )
         self.messages = self._table(
-            "open_webui.models.chat_messages", "ChatMessage", {"id", "chat_id", "user_id", "files"}
+            "open_webui.models.chat_messages",
+            "ChatMessage",
+            {
+                "id": "text",
+                "chat_id": "text",
+                "user_id": "text",
+                "role": "text",
+                "files": "json",
+                "updated_at": "integer",
+            },
         )
+        if any(
+            table.metadata is not metadata
+            for table in (self.files, self.chats, self.chat_files, self.messages)
+        ):
+            raise SaverError("Host models do not share database metadata")
         self.users_api = cast(HostUsers, host_attribute("open_webui.models.users", "Users"))
         self.chats_api = cast(HostChats, host_attribute("open_webui.models.chats", "Chats"))
-        self.messages_api = cast(
-            HostMessages, host_attribute("open_webui.models.chat_messages", "ChatMessages")
-        )
         self.config = cast(HostConfig, host_attribute("open_webui.models.config", "Config"))
         self.storage = cast(HostStorage, host_attribute("open_webui.storage.provider", "Storage"))
         self.file_access = cast(
             HostFileAccess,
             host_attribute("open_webui.utils.access_control.files", "has_access_to_file"),
         )
+        # Bind the calls we actually make, rather than assuming a matching name
+        # or version proves argument/await compatibility. No host write canaries.
+        self._call(self.users_api, "get_user_by_id", True, "id")
+        self._call(
+            self.chats_api,
+            "get_accessible_chat_by_id",
+            True,
+            "id",
+            object(),
+            db=object(),
+            permission="write",
+            chat=object(),
+        )
+        self._call(self.config, "get", True, "key", None)
+        self._call(self.config, "get", True, "key")
+        self._call(self.file_access, "__call__", True, "id", "read", object(), db=object())
+        self._call(self.storage, "get_file", False, "path")
+        self._call(self.storage, "upload_file", False, io.BytesIO(), "name", {})
+
+    @staticmethod
+    def _call(
+        owner: object, name: str, asynchronous: bool, *args: object, **kwargs: object
+    ) -> None:
+        function = owner if name == "__call__" else cast(object, getattr(owner, name, None))
+        is_async = inspect.iscoroutinefunction(function) or inspect.iscoroutinefunction(
+            inspect.getattr_static(type(function), "__call__", None)
+        )
+        if not callable(function) or is_async != asynchronous:
+            raise SaverError(f"Incompatible host callable: {name}")
+        try:
+            inspect.signature(function).bind(*args, **kwargs)
+        except (TypeError, ValueError) as error:
+            raise SaverError(f"Incompatible host signature: {name}") from error
+
+    @staticmethod
+    def _table(module: str, name: str, required: dict[str, str], *, insert: bool = False) -> Table:
+        table = cast(object, getattr(host_attribute(module, name), "__table__", None))
+        if not isinstance(table, Table) or not set(required) <= set(table.columns.keys()):
+            raise SaverError(f"Incompatible host table shape: {name}")
+        categories = {"text": String, "integer": Integer, "json": JSON}
+        for key, kind in required.items():
+            if not isinstance(table.c[key].type, categories[kind]):
+                raise SaverError(f"Incompatible host column: {name}.{key}")
+        if [column.name for column in table.primary_key] != ["id"]:
+            raise SaverError(f"Incompatible host primary key: {name}")
+        if insert and any(
+            column.name not in required
+            and not column.nullable
+            and column.default is None
+            and column.server_default is None
+            and column.computed is None
+            and column.identity is None
+            for column in table.columns
+        ):
+            raise SaverError(f"Unsupported required host insert field: {name}")
+        return table
+
+    async def initialize(self) -> None:
+        # Check real deployed columns as well as the ORM declaration before DDL.
+        async with self.engine.connect() as connection:
+
+            def check(connection: Connection) -> None:
+                inspector = inspect_sqlalchemy(connection)
+                for table in (self.files, self.chats, self.chat_files, self.messages):
+                    columns = {
+                        column["name"]: column
+                        for column in inspector.get_columns(table.name, schema=table.schema)
+                    }
+                    if not set(table.columns.keys()) <= columns.keys():
+                        raise SaverError(f"Host database schema differs from ORM: {table.name}")
+                    primary = inspector.get_pk_constraint(table.name, schema=table.schema)
+                    if primary["constrained_columns"] != ["id"]:
+                        raise SaverError(f"Host database primary key differs: {table.name}")
+                    if table in (self.files, self.chat_files) and any(
+                        name not in table.c
+                        and not column["nullable"]
+                        and column.get("default") is None
+                        and not column.get("computed")
+                        and not column.get("identity")
+                        for name, column in columns.items()
+                    ):
+                        raise SaverError(
+                            f"Unsupported required database insert field: {table.name}"
+                        )
+                    for column in table.columns:
+                        # Compare dialect-independent affinities: PostgreSQL BIGINT
+                        # and SQLite INTEGER both satisfy the integer contract.
+                        actual_type = columns[column.name]["type"]
+                        expected = column.type
+                        for category in (String, Integer, JSON):
+                            if isinstance(expected, category) and not isinstance(
+                                actual_type, category
+                            ):
+                                raise SaverError(
+                                    f"Host database column differs from ORM: "
+                                    f"{table.name}.{column.name}"
+                                )
+
+            await connection.run_sync(check)
+        await self.state.initialize()
+
+    async def execution_policy(self) -> list[str]:
+        if await self.config.get("code_interpreter.engine", "pyodide") != "pyodide":
+            raise SaverError("Managed execution requires the host Pyodide engine")
         blocked = JSON_VALUE.validate_python(
             host_attribute("open_webui.config", "CODE_INTERPRETER_BLOCKED_MODULES")
         )
         if not isinstance(blocked, list) or not all(isinstance(item, str) for item in blocked):
             raise SaverError("Unsupported host blocked-module policy")
-        self.blocked_modules = [item for item in blocked if isinstance(item, str)]
-
-    @staticmethod
-    def _table(module: str, name: str, required: set[str]) -> Table:
-        table = cast(HostModel, host_attribute(module, name)).__table__
-        if not required.issubset(set(table.columns.keys())):
-            raise SaverError("Incompatible host table shape")
-        return table
-
-    async def initialize(self) -> None:
-        if await self.config.get("code_interpreter.engine", "pyodide") != "pyodide":
-            raise SaverError("Managed execution requires the host Pyodide engine")
-        await self.state.initialize()
+        return [item for item in blocked if isinstance(item, str)]
 
     async def bind(self, actor_id: str, chat_id: str, message_id: str) -> BoundContext:
         context = BoundContext(actor_id, chat_id, message_id)
@@ -171,7 +290,7 @@ class OpenWebUIAdapter:
         self, session: AsyncSession, context: BoundContext, *, lock: bool = False
     ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
         user = await self.users_api.get_user_by_id(context.actor_id)
-        if user is None or user.role not in {"user", "admin"}:
+        if user is None or user.id != context.actor_id or user.role not in {"user", "admin"}:
             raise SaverError("Authenticated actor is unavailable")
         query = select(self.chats).where(self.chats.c.id == context.chat_id)
         if lock:
@@ -180,10 +299,13 @@ class OpenWebUIAdapter:
         if row is None:
             raise SaverError("Destination chat was deleted or is unavailable")
         host_chat = SimpleNamespace(**dict(row))
-        if not await self.chats_api.get_accessible_chat_by_id(
+        accessible = await self.chats_api.get_accessible_chat_by_id(
             context.chat_id, user, db=session, permission="write", chat=host_chat
-        ):
+        )
+        if not accessible:
             raise SaverError("Chat write permission is unavailable or revoked")
+        if getattr(accessible, "id", None) != context.chat_id:
+            raise SaverError("Incompatible host accessible-chat result")
         chat = json_object(row["chat"])
         history = json_object(chat.get("history"))
         messages = json_object(history.get("messages"))
@@ -244,13 +366,13 @@ class OpenWebUIAdapter:
                     or user is None
                     or not (
                         user.role == "admin"
-                        or await self.file_access(file_id, "read", user, db=session)
+                        or await self.file_access(file_id, "read", user, db=session) is True
                     )
                 ):
                     raise SaverError("File is not readable by this actor")
             path = require_string(row["path"])
         try:
-            provider_path = await asyncio.to_thread(self.storage.get_file, path)
+            provider_path = require_string(await asyncio.to_thread(self.storage.get_file, path))
             data = await asyncio.to_thread(self._read_bounded, provider_path, maximum)
         except (OSError, ValueError) as error:
             raise SaverError("Provider bytes are missing or unavailable") from error
@@ -367,6 +489,7 @@ class OpenWebUIAdapter:
         )
         if stored != data or not provider_path:
             raise SaverError("Storage provider did not confirm the intended bytes")
+        provider_path = require_string(provider_path)
         async with self.state.transaction() as session:
             receipt = await self.state.load(session, operation_id, context, lock=True)
             elected = self.slot(receipt, path)
@@ -497,9 +620,17 @@ class OpenWebUIAdapter:
                 .where(self.chats.c.id == context.chat_id)
                 .values(chat=chat, updated_at=now)
             )
-            await self.messages_api.upsert_message(
-                receipt.message_id, context.chat_id, context.actor_id, {"files": files}, db=session
+            changed = await session.execute(
+                update(self.messages)
+                .where(
+                    self.messages.c.id == f"{context.chat_id}-{receipt.message_id}",
+                    self.messages.c.chat_id == context.chat_id,
+                    self.messages.c.role == "assistant",
+                )
+                .values(files=files, updated_at=now)
             )
+            if not isinstance(changed, CursorResult) or changed.rowcount != 1:
+                raise SaverError("Normalized assistant disappeared during publication")
             receipt.state = "published"
             await self.state.put(session, receipt)
         return receipt

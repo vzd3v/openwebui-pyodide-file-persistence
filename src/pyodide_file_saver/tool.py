@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue, ValidationError, field_validator
 
 from .browser_execution import (
     checkpoint_bytes,
@@ -117,6 +118,23 @@ class Tools:
     class Valves(Limits):
         """Conservative tunable transfer limits, always below stock transport ceilings."""
 
+        @field_validator(
+            "max_files",
+            "max_file_bytes",
+            "max_total_bytes",
+            "max_envelope_bytes",
+            "max_text_bytes",
+            "callback_timeout_seconds",
+            mode="before",
+        )
+        @classmethod
+        def parse_integer_setting(cls, value: object) -> object:
+            # Native settings inputs serialize numbers as strings. Normalize
+            # only that configuration boundary, never runtime/browser contracts.
+            if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
+                return int(value)
+            return value
+
     def __init__(self) -> None:
         self.valves = self.Valves()
 
@@ -199,6 +217,7 @@ class Tools:
             else:
                 if __event_call__ is None:
                     raise SaverError("A connected browser session is required for Python execution")
+                blocked_modules = await adapter.execution_policy()
                 receipt, head = await adapter.state.allocate(context)
                 current_operation = receipt.operation_id
                 restore: list[FileBytes] = []
@@ -214,7 +233,7 @@ class Tools:
                     raise SaverError("Attached input count exceeds the configured limit")
                 restore = await adapter.input_files(context, attachments, restore, limits)
                 wrapper, nonce = make_wrapper(
-                    receipt.operation_id, call.code, restore, limits, adapter.blocked_modules
+                    receipt.operation_id, call.code, restore, limits, blocked_modules
                 )
                 payload: dict[str, JsonValue] = {
                     "type": "execute:python",

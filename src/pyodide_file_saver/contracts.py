@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 
 HOST_SOCKET_LIMIT = 16 * 1024 * 1024
+FILENAME_BYTES = 180
 JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 SCHEMA_VERSION = 1
 
@@ -27,12 +28,57 @@ class StrictModel(BaseModel):
 
 
 class Limits(StrictModel):
-    max_files: int = Field(default=64, ge=1, le=256)
-    max_file_bytes: int = Field(default=2 * 1024 * 1024, ge=1, lt=HOST_SOCKET_LIMIT)
-    max_total_bytes: int = Field(default=4 * 1024 * 1024, ge=1, lt=HOST_SOCKET_LIMIT)
-    max_envelope_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, lt=HOST_SOCKET_LIMIT)
-    max_text_bytes: int = Field(default=16 * 1024, ge=1, le=64 * 1024)
-    callback_timeout_seconds: int = Field(default=55, ge=1, lt=60)
+    max_files: int = Field(
+        default=64,
+        ge=1,
+        le=256,
+        description=(
+            "Maximum regular files in the entire managed workspace "
+            "(including restored inputs); count, not bytes."
+        ),
+    )
+    max_file_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1,
+        lt=HOST_SOCKET_LIMIT,
+        description="Maximum decoded bytes per managed file; host upload policy may lower it.",
+    )
+    max_total_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1,
+        lt=HOST_SOCKET_LIMIT,
+        description=(
+            "Maximum decoded bytes across the whole workspace, "
+            "including restored inputs and private files."
+        ),
+    )
+    max_envelope_bytes: int = Field(
+        default=15 * 1024 * 1024,
+        ge=1024,
+        lt=HOST_SOCKET_LIMIT,
+        description=(
+            "Maximum serialized UTF-8 bytes per request, callback or checkpoint, "
+            "including JSON/base64 overhead; strictly below the stock 16 MiB "
+            "transport ceiling."
+        ),
+    )
+    max_text_bytes: int = Field(
+        default=16 * 1024,
+        ge=1,
+        le=64 * 1024,
+        description=(
+            "Maximum captured UTF-8 bytes per stdout/stderr stream; excess text is truncated."
+        ),
+    )
+    callback_timeout_seconds: int = Field(
+        default=55,
+        ge=1,
+        lt=60,
+        description=(
+            "Seconds waiting for a browser callback; strictly below the stock "
+            "60-second frontend deadline. Timeout does not prove worker termination."
+        ),
+    )
 
 
 class Action(StrictModel):
@@ -141,10 +187,19 @@ def safe_relative_path(value: str) -> str:
 
 def safe_filename(value: str) -> str:
     name = PurePosixPath(safe_relative_path(value)).name
-    # Keep Unicode labels, but avoid provider/filesystem byte-length failures.
-    while len(name.encode("utf-8")) > 180:
-        name = name[:-1]
-    return name
+    if len(name.encode("utf-8")) <= FILENAME_BYTES:
+        return name
+    # Preserve ordinary extensions (including compound document/archive suffixes)
+    # and distinguish long names sharing a prefix without changing short names.
+    suffix = "".join(PurePosixPath(name).suffixes)
+    if len(suffix.encode("utf-8")) > FILENAME_BYTES // 2:
+        suffix = PurePosixPath(name).suffix
+    if len(suffix.encode("utf-8")) > FILENAME_BYTES // 2:
+        suffix = ""  # An arbitrarily long dotted tail is not a useful extension.
+    marker = "-" + digest(name.encode("utf-8"))[:16]
+    budget = FILENAME_BYTES - len((marker + suffix).encode("utf-8"))
+    stem = name[: -len(suffix)] if suffix else name
+    return stem.encode("utf-8")[:budget].decode("utf-8", "ignore") + marker + suffix
 
 
 def validate_files(files: list[FileBytes], limits: Limits) -> None:

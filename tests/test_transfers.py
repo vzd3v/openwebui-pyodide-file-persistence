@@ -20,6 +20,7 @@ from pyodide_file_saver.contracts import (
     encode_files,
     json_text,
     markdown_link,
+    safe_filename,
     validate_files,
 )
 
@@ -123,3 +124,32 @@ def test_unicode_bytes_preload_hints_and_canonical_links() -> None:
 def test_action_contract_has_no_caller_selected_destination(value: dict[str, str]) -> None:
     with pytest.raises(ValidationError):
         Action.model_validate(value)
+
+
+@pytest.mark.parametrize("suffix", [".xlsx", ".docx", ".pdf", ".tar.gz"])
+def test_long_unicode_names_preserve_suffix_and_distinguish_truncations(suffix: str) -> None:
+    import mimetypes
+
+    normal = "Отчёт [draft]" + suffix
+    assert safe_filename("outputs/" + normal) == normal
+    names = [safe_filename("outputs/" + "文" * 100 + tail + suffix) for tail in ("a", "b")]
+    assert names[0] != names[1]
+    assert all(len(name.encode("utf-8")) <= 180 and name.endswith(suffix) for name in names)
+    assert all(mimetypes.guess_type(name) == mimetypes.guess_type(normal) for name in names)
+
+
+def test_larger_defaults_and_valve_units_retain_transport_guards() -> None:
+    limits = Limits()
+    assert limits.max_file_bytes == limits.max_total_bytes == 8 * 1024 * 1024
+    assert limits.max_envelope_bytes == 15 * 1024 * 1024
+    for field in Limits.model_fields.values():
+        assert field.description
+    for field, value in (
+        ("max_file_bytes", 16 * 1024 * 1024),
+        ("max_envelope_bytes", 16 * 1024 * 1024),
+        ("callback_timeout_seconds", 60),
+    ):
+        with pytest.raises(ValidationError):
+            Limits.model_validate({field: value})
+    files = [FileBytes("outputs/larger.bin", b"\x00\xff" * (1536 * 1024))]
+    assert read_checkpoint(checkpoint_bytes(files), limits) == files

@@ -1,16 +1,17 @@
 # Installation and removal
 
-Pre-release procedure; stock-browser deployment qualification is pending.
+Pre-release procedure; check the [artifact-specific matrix](../dev/compatibility.md).
 
 ## Requirements
 
-- Open WebUI 0.12.2, native function calling, Pyodide engine, connected browser.
-- Build with Python 3.11/3.12. The Open WebUI host supplies Pydantic 2/SQLAlchemy 2;
+- Open WebUI with the [required contracts](../dev/compatibility.md), native function
+  calling, Pyodide engine and a connected browser for new execution.
+- Build with Python 3.11 or newer. The Open WebUI host supplies Pydantic 2/SQLAlchemy 2;
   do not install this repository's development environment into it.
 - Existing PostgreSQL or local disk SQLite database, with permission to create
   the Tool's namespaced tables. Replicas must share that database; separate
   per-replica databases and network-filesystem SQLite are not supported topologies.
-- Configured storage provider. No provider has completed acceptance testing yet.
+- Configured storage provider; qualification is scoped to the linked matrix.
 
 ## Steps
 
@@ -33,7 +34,7 @@ Pre-release procedure; stock-browser deployment qualification is pending.
 
 The first managed call creates and validates two tables in the existing host DB:
 `pyodide_file_saver_workspace` and `pyodide_file_saver_operation`. It does not
-modify Open WebUI-owned table definitions or migrations. An unexpected version,
+modify Open WebUI-owned table definitions or migrations. A missing host capability,
 incompatible schema or insufficient permission fails explicitly; it is not repaired
 by dropping data.
 
@@ -42,9 +43,9 @@ by dropping data.
 | Valve | Default |
 | --- | --- |
 | `max_files` | 64 regular files |
-| `max_file_bytes` | 2 MiB per file |
-| `max_total_bytes` | 4 MiB workspace, including restored inputs |
-| `max_envelope_bytes` | 8 MiB serialized transfer |
+| `max_file_bytes` | 8 MiB decoded bytes per file |
+| `max_total_bytes` | 8 MiB decoded workspace, including restored inputs |
+| `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
 | `max_text_bytes` | 16 KiB per stdout/stderr stream |
 | `callback_timeout_seconds` | 55 seconds |
 
@@ -52,6 +53,19 @@ Base64/JSON overhead counts toward the serialized limit. Host upload/provider
 restrictions may lower the effective limits. These defaults are not a blanket
 provider qualification or capacity promise. Valves enforce serialized bounds below
 the host's 16 MiB callback ceiling and a deadline below its 60-second worker timeout.
+File count and captured-text caps are conservative policy, not a host capacity
+claim. Limits apply to the whole managed workspace, not only newly issued files.
+
+Configure **global Tool Valves** through the native Tool editor/settings UI as an
+owner, write-granted editor or administrator (subject to host policy). These are
+not ordinary chat-user `UserValves`; changes affect everyone using that Tool.
+Every field describes its units. Updating source does not overwrite previously
+saved explicit Valve values: review and intentionally change those values if
+larger limits are wanted. Decoded limits do not bypass serialized JSON/base64
+limits or the host's upload policy; there is no chunked transfer.
+Native settings may submit integer values as decimal strings; only the global
+Valves configuration boundary normalizes these to integers. Fractions, exponent
+notation, booleans, unknown fields and out-of-range values remain invalid.
 
 ## Remove / rollback
 

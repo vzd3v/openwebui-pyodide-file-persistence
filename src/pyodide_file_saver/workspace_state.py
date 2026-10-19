@@ -17,11 +17,11 @@ from sqlalchemy import (
     String,
     Table,
     Text,
-    inspect,
     select,
     text,
     update,
 )
+from sqlalchemy import inspect as inspect_sqlalchemy
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -95,7 +95,7 @@ class WorkspaceState:
                 raise SaverError("Unsupported workspace schema version; data was not changed")
 
     def _validate_shape(self, connection: Connection) -> None:
-        inspector = inspect(connection)
+        inspector = inspect_sqlalchemy(connection)
         for table in (self.workspace, self.operation):
             columns = inspector.get_columns(table.name, schema=self.metadata.schema)
             by_name = {column["name"]: column for column in columns}
@@ -114,16 +114,43 @@ class WorkspaceState:
                 raise SaverError("Unexpected Tool table foreign keys")
             if inspector.get_unique_constraints(table.name, schema=self.metadata.schema):
                 raise SaverError("Unexpected Tool table unique constraints")
+            if connection.dialect.name == "sqlite":
+                # SQLAlchemy omits SQLite expression indexes from reflection.
+                # Native metadata still exposes uniqueness; never overlook a
+                # constraint just because the added index has an expression.
+                quote = connection.dialect.identifier_preparer.quote
+                schema = f"{quote(self.metadata.schema)}." if self.metadata.schema else ""
+                indexes = connection.exec_driver_sql(
+                    f"PRAGMA {schema}index_list({quote(table.name)})"
+                ).mappings()
+                if any(row["unique"] and row["origin"] != "pk" for row in indexes):
+                    raise SaverError("Unexpected Tool table unique index")
             expected_indexes = {
                 index.name: ([column.name for column in index.columns], bool(index.unique))
                 for index in table.indexes
             }
+            indexes = inspector.get_indexes(table.name, schema=self.metadata.schema)
+            if any(
+                index["name"] in expected_indexes
+                and (
+                    index.get("column_sorting")
+                    or any(key.endswith("_where") for key in index.get("dialect_options", {}))
+                )
+                for index in indexes
+            ):
+                raise SaverError("Incompatible existing Tool index definition")
             actual_indexes = {
                 index["name"]: (index["column_names"], bool(index["unique"]))
-                for index in inspector.get_indexes(table.name, schema=self.metadata.schema)
+                for index in indexes
                 if not index.get("duplicates_constraint")
             }
-            if actual_indexes != expected_indexes:
+            if any(
+                actual_indexes.get(name) != shape for name, shape in expected_indexes.items()
+            ) or any(
+                unique
+                for name, (_, unique) in actual_indexes.items()
+                if name not in expected_indexes
+            ):
                 raise SaverError("Incompatible existing Tool indexes")
 
     async def allocate(self, context: BoundContext) -> tuple[Receipt, Receipt | None]:

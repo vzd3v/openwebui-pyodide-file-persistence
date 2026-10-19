@@ -4,11 +4,15 @@ One in-process native Tool; no separate server/executor, frontend patch or
 custom route. Open WebUI owns identities, grants, ordinary File records,
 configured provider bytes and downloads. Browser data is untrusted input.
 
-The current adapter accepts Open WebUI 0.12.2 on host Python 3.11/3.12. PostgreSQL
+The adapter checks required async APIs, synchronous storage methods, call shapes,
+shared ORM metadata and actual database columns before creating Tool state. It
+does not infer compatibility from the host's version label. PostgreSQL
 coordinates workers sharing one host database; SQLite requires a local disk DB
 with the qualified locking behavior. Separate DBs per replica and network-file
 SQLite do not provide this coordination. Compatibility and provider qualification
-status are documented in [README](../../README.md), not inferred from the schema.
+status are documented in the [qualification matrix](compatibility.md), not inferred
+from the schema. Recovery does not require execution-engine/blocked-module settings;
+new execution still requires the host's Pyodide engine and its current policy.
 
 | Module | Responsibility |
 | --- | --- |
@@ -47,8 +51,10 @@ object name for every write attempt, then elect one immutable File/receipt
 mapping under DB lock. Losing attempts may leave unacknowledged objects;
 no automatic GC is claimed. Committed-but-deleted Files are never recreated.
 
-Publication locks Chat, merges attachments, flushes the host's normalized
-message, inserts absent ChatFile links and updates the receipt in one transaction.
+Publication locks Chat, merges attachments, updates exactly one existing normalized
+assistant row's `files`/`updated_at` (preserving content/output), inserts absent
+ChatFile links and updates the receipt in one transaction. It does not call an
+upsert helper whose transaction behavior might vary between host versions.
 Reread actual bytes and persisted attachments/linkage before returning success.
 UI notifications are presentation, not persistence. Download content URLs and
 attachment-card URLs are distinct.
@@ -69,5 +75,7 @@ execution, archive extraction, indexing or rendering.
 ## Build
 
 `uv run python scripts/build_tool.py --check` flattens modules in fixed order,
-preserves native Tool metadata and compares two builds. Generated `dist/` is
-untracked. Building never imports Open WebUI.
+preserves native Tool metadata, rejects conflicting import bindings and compares
+two builds. Identical import targets may share a binding; wildcard imports are
+rejected because their bindings cannot be checked statically. Generated `dist/`
+is untracked. Building never imports Open WebUI.

@@ -3,7 +3,8 @@
 Select the Tool for a chat/model configured for native function calling and
 Pyodide, as described in [installation](../ops/install.md). The assistant handles
 managed execution and recovery calls; you normally just ask for the document.
-The project is experimental: [sharing/provider qualification is incomplete](../../README.md).
+The project is experimental: check the
+[artifact-specific qualification matrix](../dev/compatibility.md).
 
 Ask for a document normally. The agent works with relative paths in a managed
 directory. `outputs/` means **issued to the user**, not “finished”: a requested
@@ -15,8 +16,9 @@ publishes new/byte-changed issued files. The assistant must include returned
 Markdown links in its answer. Cards are optional convenience, not a substitute.
 Links use Open WebUI's authenticated file routes, not browser-local URLs. Sharing
 is intended to use those same inline links without Controls. Before relying on it,
-verify a fresh authorized recipient on your instance; end-to-end sharing is not
-fully qualified. Recipients must sign in and have normal host access. Anonymous
+verify a fresh authorized recipient on your instance; qualification is scoped to
+the linked matrix, not every build or deployment. Recipients must sign in and
+have normal host access. Anonymous
 download is not supported.
 
 After **workspace saved**, open the chat in another authenticated browser and

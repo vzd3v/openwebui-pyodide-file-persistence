@@ -14,8 +14,9 @@ instances you do not own or have permission to test.
 
 ## Compatibility status
 
-Pre-release: no deployment/provider matrix has completed acceptance testing.
-Use synthetic documents for qualification.
+Pre-release: see the artifact-specific [qualification matrix](docs/dev/compatibility.md).
+Contract checks are not browser/provider qualification. Use synthetic documents
+for qualification of a new build or environment.
 
 ## Trust and data boundaries
 

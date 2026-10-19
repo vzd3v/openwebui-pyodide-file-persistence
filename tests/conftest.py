@@ -28,7 +28,6 @@ from sqlalchemy import (
     UniqueConstraint,
     select,
     text,
-    update,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -177,7 +176,6 @@ class HostHarness:
             "actor-b": SimpleNamespace(id="actor-b", role="user"),
         }
         self.write_allowed = True
-        self.fail_message_write = False
         self.provider = Provider(root)
         self.config: dict[str, object] = {"code_interpreter.engine": "pyodide"}
         self.files = Table(
@@ -209,7 +207,9 @@ class HostHarness:
             Column("user_id", String),
             Column("role", String),
             Column("content", String),
+            Column("output", JSON),
             Column("files", JSON),
+            Column("updated_at", Integer),
         )
         self.chat_files = Table(
             "chat_file",
@@ -256,6 +256,7 @@ class HostHarness:
                         user_id=actor,
                         role="assistant",
                         content="newer normalized text",
+                        output=[{"type": "message", "content": "preserved output"}],
                         files=[],
                     )
                 )
@@ -275,7 +276,6 @@ class HostHarness:
             },
             "open_webui.models.chat_messages": {
                 "ChatMessage": SimpleNamespace(__table__=self.messages),
-                "ChatMessages": SimpleNamespace(upsert_message=self.upsert_message),
             },
             "open_webui.models.users": {"Users": SimpleNamespace(get_user_by_id=self.user)},
             "open_webui.models.config": {"Config": SimpleNamespace(get=self.get_config)},
@@ -311,24 +311,6 @@ class HostHarness:
 
     async def get_config(self, key: str, default: object = None) -> object:
         return self.config.get(key, default)
-
-    async def upsert_message(
-        self,
-        message_id: str,
-        chat_id: str,
-        user_id: str,
-        data: dict[str, JsonValue],
-        db: AsyncSession | None = None,
-    ) -> object:
-        assert db is not None
-        if self.fail_message_write:
-            raise OSError("Synthetic host message write failure")
-        await db.execute(
-            update(self.messages)
-            .where(self.messages.c.id == f"{chat_id}-{message_id}")
-            .values(**data)
-        )
-        return None
 
     async def call(
         self,

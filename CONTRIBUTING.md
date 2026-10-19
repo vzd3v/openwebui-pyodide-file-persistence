@@ -17,7 +17,7 @@ pull requests.
 
 ## Development
 
-Use Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Use Python 3.11 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 From a clone of the repository:
 
 ```sh
@@ -44,7 +44,8 @@ This project uses [GitHub Flow](https://docs.github.com/en/get-started/using-git
    delete the working branch after merge. Do not push changes directly to `main`.
 
 CI runs on pull requests and on `main`. It checks formatting, lint, strict types,
-reproducible builds and tests on Python 3.11/3.12 with disk SQLite and PostgreSQL.
+reproducible builds and tests on Python 3.11–3.15 with disk SQLite and PostgreSQL.
+This portable Tool matrix does not extend Open WebUI's own host Python range.
 Do not bypass failing checks or describe a skipped check as passing.
 
 ## Scope and safety

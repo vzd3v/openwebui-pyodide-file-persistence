@@ -14,11 +14,46 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from pyodide_file_saver.contracts import BoundContext, FileBytes, Limits
-from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter
+from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter, json_object
 from pyodide_file_saver.tool import Tools
 
 pytestmark = pytest.mark.integration
 HostFactory = Callable[[AsyncEngine, str | None], HostHarness]
+
+
+async def publication_trigger(host: HostHarness, enabled: bool) -> None:
+    """Abort the final receipt write in the real DB, after attachment writes."""
+    prefix = f'"{host.metadata.schema}".' if host.metadata.schema else ""
+    table = f"{prefix}pyodide_file_saver_operation"
+    async with host.engine.begin() as connection:
+        if host.engine.dialect.name == "sqlite":
+            statement = (
+                f"CREATE TRIGGER reject_publication BEFORE UPDATE ON {table} "
+                "WHEN json_extract(NEW.receipt_json, '$.state') = 'published' "
+                "BEGIN SELECT RAISE(ABORT, 'synthetic publication rejection'); END"
+                if enabled
+                else "DROP TRIGGER reject_publication"
+            )
+            await connection.execute(text(statement))
+        elif enabled:
+            await connection.execute(
+                text(
+                    f"CREATE FUNCTION {prefix}reject_publication() RETURNS trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN "
+                    "IF NEW.receipt_json::json->>'state' = 'published' THEN "
+                    "RAISE EXCEPTION 'synthetic publication rejection'; END IF; "
+                    "RETURN NEW; END $$"
+                )
+            )
+            await connection.execute(
+                text(
+                    f"CREATE TRIGGER reject_publication BEFORE UPDATE ON {table} "
+                    f"FOR EACH ROW EXECUTE FUNCTION {prefix}reject_publication()"
+                )
+            )
+        else:
+            await connection.execute(text(f"DROP TRIGGER reject_publication ON {table}"))
+            await connection.execute(text(f"DROP FUNCTION {prefix}reject_publication()"))
 
 
 def operation(result: dict[str, JsonValue]) -> str:
@@ -37,7 +72,9 @@ def test_saved_retry_converges_without_rerunning_python(
                 [FileBytes("working.txt", b"private"), FileBytes("outputs/Отчёт.txt", b"issued")]
             )
             host.provider.fail_attempts = {2} if fault == "provider" else set()
-            host.fail_message_write = fault == "message"
+            if fault == "message":
+                await OpenWebUIAdapter().initialize()
+                await publication_trigger(host, True)
             failed = await host.call(browser)
             assert failed["incomplete"] is True and "issued_files" not in failed
             adapter = OpenWebUIAdapter()
@@ -47,8 +84,28 @@ def test_saved_retry_converges_without_rerunning_python(
                 assert (
                     await connection.scalar(select(func.count()).select_from(host.chat_files)) == 0
                 )
+                row = (
+                    (
+                        await connection.execute(
+                            select(host.messages).where(host.messages.c.id == "chat-a-assistant-a")
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                assert row and row["files"] == []
+                assert row["content"] == "newer normalized text"
+                assert row["output"] == [{"type": "message", "content": "preserved output"}]
+                chat = json_object(
+                    await connection.scalar(
+                        select(host.chats.c.chat).where(host.chats.c.id == host.context.chat_id)
+                    )
+                )
+                messages = json_object(json_object(chat["history"])["messages"])
+                assert json_object(messages["assistant-a"]).get("files", []) == []
             host.provider.fail_attempts.clear()
-            host.fail_message_write = False
+            if fault == "message":
+                await publication_trigger(host, False)
             results = await asyncio.gather(
                 *(host.call(action="retry", operation_id=saved.operation_id) for _ in range(2))
             )
@@ -73,6 +130,9 @@ def test_saved_retry_converges_without_rerunning_python(
                     )
                     == "newer normalized text"
                 )
+                assert await connection.scalar(
+                    select(host.messages.c.output).where(host.messages.c.id == "chat-a-assistant-a")
+                ) == [{"type": "message", "content": "preserved output"}]
                 assert (
                     await connection.scalar(
                         select(host.chat_files.c.id).where(

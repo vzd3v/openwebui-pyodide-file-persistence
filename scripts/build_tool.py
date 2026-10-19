@@ -5,17 +5,19 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import tomllib
 from pathlib import Path
 
 MODULES = ("contracts", "workspace_state", "browser_execution", "openwebui_adapter", "tool")
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = '''"""
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+HEADER = f'''"""
 title: Pyodide File Saver
 author: vzd3v
-version: 0.1.0a1
+version: {VERSION}
 license: MIT
 description: Durable browser Python workspaces and shared-chat file download links.
-required_open_webui_version: 0.12.2
+required_open_webui_version: 0.12.0
 """
 from __future__ import annotations
 '''
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 def build() -> str:
     imports: dict[str, None] = {}
+    bindings: dict[str, str] = {}
     bodies: list[str] = []
     for module in MODULES:
         source = (ROOT / "src" / "pyodide_file_saver" / f"{module}.py").read_text()
@@ -34,6 +37,22 @@ def build() -> str:
                 removed.update(range(node.lineno - 1, node.end_lineno or node.lineno))
                 if isinstance(node, ast.ImportFrom) and (node.level or node.module == "__future__"):
                     continue
+                for alias in node.names:
+                    if isinstance(node, ast.Import):
+                        name = alias.asname or alias.name.split(".")[0]
+                        target = alias.name if alias.asname else name
+                    else:
+                        if alias.name == "*":
+                            raise ValueError("Wildcard imports cannot be flattened safely")
+                        name = alias.asname or alias.name
+                        target = f"{node.module}.{alias.name}"
+                    previous = bindings.get(name)
+                    if previous is not None and previous != target:
+                        raise ValueError(
+                            f"Conflicting bundled import binding {name!r}: "
+                            f"{previous!r} versus {target!r} in {module}"
+                        )
+                    bindings[name] = target
                 imports[ast.unparse(node)] = None
             elif (
                 node is tree.body[0]
