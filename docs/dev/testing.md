@@ -11,7 +11,6 @@ uv run ruff format --check src scripts tests
 uv run ruff check src scripts tests
 uv run basedpyright
 uv run python scripts/build_tool.py --check
-uv run python scripts/check_budgets.py
 uv run pytest -q -m 'not integration'
 uv run pytest -q -m integration
 ```
@@ -56,15 +55,13 @@ Do not mock internal modules or databases; replace only the external host/provid
 boundary. Add focused tests for observable behavior and critical persistence or
 security invariants, not private implementation details.
 
-CI budgets: unit ≤30s, integration ≤5min, test lines/files ≤source lines/files,
-test diff ≤2×source diff. `scripts/check_budgets.py --base <commit>` additionally
-checks the diff. Test public behavior and critical persistence/security
-invariants, not implementation details. No coverage percentage gate.
+There are no quotas on test line counts, file counts or test-to-source diff
+ratios. Focused test-only pull requests are welcome. No coverage percentage gate.
 
-CI applies formatting, lint, strict types, deterministic build, maintenance
-budgets, unit tests and integration tests in that order. Linux CI limits unit
-execution to 30 seconds and integration execution to 5 minutes. A passing CI run
-does not establish browser or provider compatibility.
+CI applies formatting, lint, strict types, deterministic build, unit tests and
+integration tests in that order. Linux CI limits unit execution to 30 seconds and
+integration execution to 5 minutes. A passing CI run does not establish browser
+or provider compatibility.
 
 ## Browser qualification
 
