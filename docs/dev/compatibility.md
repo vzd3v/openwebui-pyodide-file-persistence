@@ -31,26 +31,28 @@ Do not bypass a failed check by changing a version label or modifying host code.
 
 ## Qualification scope
 
-Version `0.2.0a1` introduces the browser shell and version-two manifests. Earlier
-release observations do not qualify this new artifact. Portable automated checks
-use real disk SQLite/PostgreSQL and synthetic external host boundaries. A real
-Chromium module-worker smoke exercises the production wrapper and public Pyodide
-APIs, including 256 MiB transient scratch and fresh-worker retained restoration.
-Neither check substitutes for native Tool/model execution or shared UI downloads.
+The following observations apply to version `0.2.0a1`, generated artifact SHA256
+`7c3a04c4d152f2fdd24e5fc24dbb039ee5756b01e3baea5b27e958dc7a0bfad7`.
+Earlier artifacts and different host/provider configurations require their own checks.
 
-Native stock-host acceptance of this version must separately verify installed
-artifact identity, ordinary owner/model execution, configured storage, fresh-browser
-recovery, shared inline downloads, private-file denial and grant revocation.
+| Environment | Verified scope |
+| --- | --- |
+| Portable integration with synthetic host/callback boundaries; real disk SQLite and PostgreSQL | Durable receipts, immutable blob reuse, CAS/retry, publication rollback, input authorization and version-one checkpoint recovery |
+| Chromium module worker with production wrapper and public Pyodide APIs | Shared Python/shell files, 256 MiB transient scratch, 32 MiB binary shell operations, retained deltas, fresh-worker restoration and rejected links |
+| Open WebUI 0.12.2 native UI/Tool path; PostgreSQL and local storage | Python followed by Bash in the same browser; 128 MiB warm scratch absent after fresh-browser restoration; saved-script rerun; unchanged script/output File ID reuse; original native CSV reference without duplicate upload |
+| Same native configuration, authenticated owner/recipient/foreign users | Owner and authorized-recipient inline downloads with exact bytes after reload; foreign/private-file denial; grant revocation blocks recipient downloads; native input deletion blocks warm/cold execution without advancing the head |
+
+The native observation does not establish a pristine upstream installation.
+No frontend patch was added for this integration. The installer minimum of
+0.12.0 remains a requirement checked against source contracts; this qualification
+does not establish runtime acceptance of 0.12.0.
 No remote S3/GCS/Azure provider qualification or general browser-memory capacity
-promise is made. The advertised minimum is a requirement, not a multiversion
-frontend compatibility matrix.
+promise is made.
 
 The version-sensitive `execute:python` event is checked against upstream source;
-it is not documented as a stable public extension API. The integration requires
-no upstream frontend changes but must be requalified when that contract changes.
-The filesystem/bootstrap uses documented public Pyodide Python/JS APIs and the
-public npm `just-bash/browser` export.
+it is not documented as a stable public extension API. Requalify when that
+contract changes. The filesystem/bootstrap uses documented public Pyodide APIs
+and the public npm `just-bash/browser` export.
 
 Portable Tool/build Python support is separate from the host's Python range.
-This project does not override Open WebUI's own Python requirements. Checks fail
-closed on missing contracts; do not bypass them by changing a version label.
+This project does not override Open WebUI's own Python requirements.
