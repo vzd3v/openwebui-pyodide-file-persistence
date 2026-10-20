@@ -134,7 +134,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openwebui-pyodide-file-saver"
+name = "openwebui-pyodide-file-persistence"
 version = "0.1.0a2"
 source = { virtual = "." }
 dependencies = [
