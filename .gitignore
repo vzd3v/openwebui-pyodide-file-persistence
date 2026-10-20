@@ -14,3 +14,4 @@ __pycache__/
 /artifacts/
 /test-results/
 /playwright-report/
+/node_modules/

@@ -24,35 +24,78 @@ The current installer minimum is Open WebUI 0.12.0.
   require a currently enabled execution engine or browser.
 - The stock transfer/deadline contract: serialized payloads below 16 MiB and
   callback wait below 60 seconds. Provider upload limits can be lower.
+- Empty retained files additionally require configured native `STORAGE_PROVIDER=local`
+  and the native filename-qualified content route. The explicit representation is
+  `path=""`, `data.content=""`, an integration marker and a committed origin receipt
+  slot with exact zero size/SHA-256. Provider bytes are never replaced by fallback
+  text for nonempty files. Native S3/GCS/Azure deletion cannot safely handle this
+  representation, so new empty Files are rejected there and for unknown providers.
+  This check does not prevent reads of previously saved empty Files.
 
 Checks fail closed on concrete missing/incompatible contracts. They cannot prove
 that an unknown implementation preserves every permission or frontend semantic.
 Do not bypass a failed check by changing a version label or modifying host code.
 
-## Evidence scope
+## Saved-data compatibility
 
-Current `0.1.0a2` observations below apply only to generated artifact SHA256
-`a522503432ebdd06ed013b873b692a41275c0cfa0d0674838d695b9ce520059d`
-and its corresponding source. Earlier `0.1.0a2` drafts are not qualified by these
-results.
+Version `0.2.0a2` reads earlier receipts and version-one checkpoints. This is a
+forward upgrade path, not a reversible binary swap: strict older `0.2.0a1` readers
+reject the new receipt fields and FileSlot representation, including for nonempty
+files. After a2 writes receipts, preserve the database and native Files and use a
+version that understands those receipts. Deselecting the Tool can stop new calls;
+replacing it with a1 does not restore workspace compatibility. Do not delete or
+rewrite coordination data or saved Files to force a downgrade.
 
-| Artifact / environment | Evidence | Not established |
-| --- | --- | --- |
-| Current `0.1.0a2`, portable Python 3.11–3.15 | Automated checks with synthetic external host/callback boundaries and real disk SQLite/PostgreSQL | Actual host Python support or browser/provider acceptance |
-| Current `0.1.0a2` single-file Tool loaded by actual upstream 0.12.0/0.12.2/0.12.3 native loader, Python 3.11/3.12, fresh disk SQLite/PostgreSQL, local provider | Generated Tool initialization/Valve schema, capability/permission contracts, 3 MiB binary storage/restoration, real-trigger atomic publication rollback and content/output preservation, zero-Python retry, owner/shared/foreign/private-checkpoint access; synthetic external execution callback | A running pristine host, stock UI/browser execution, remote providers or every later version |
-| Prior `0.1.0a1`, maintainer-modified Open WebUI 0.12.2, PostgreSQL, local storage | Scoped live stock-browser DOCX/XLSX/PDF generation, owner/shared inline downloads, fresh-browser recovery, private/foreign denial, grant revocation, fault/retry/concurrency and lifecycle/interruption checks | Pristine upstream deployment, all providers/topologies, or the current build |
-| Current `0.1.0a2`, maintainer-modified Open WebUI 0.12.2, PostgreSQL, local storage | Native settings save/reload and source-update preservation; ordinary-owner 3 MiB binary generation, owner/shared inline downloads with exact bytes/names, fresh-browser private workspace and original-binary recovery, new checksum output, private/foreign denial and existing Tool/data preservation | Pristine upstream deployment, other providers/topologies, full-capacity/transport-boundary testing or replay of the prior full stress matrix |
-| Corresponding current modular source, PostgreSQL/local storage, genuine served-worker callbacks where execution occurs | Five direct checks: malformed callback path, invalid action, worker file-size limit, stale/winner CAS, isolated non-Pyodide engine recovery/execute guard; saved status/retry use zero callbacks | Another native model/Socket.IO or Tool-grant test, or a full fault/interruption matrix |
+## Qualification scope
 
-The current stock-browser transfer used explicit 4 MiB/file, 7 MiB/workspace and
-14 MiB/envelope Valves. The native UI exposed the 8/8/15 MiB defaults and described
-fields, accepted integer-form strings and retained saved values after reload and
-same-source update. A 3 MiB binary and fresh-browser recovery do not establish
-full 8 MiB capacity or the 16 MiB transport boundary. Prior-artifact stress results
-were not replayed wholesale for this build.
+### Current artifact: 0.2.0a2
+
+The following observations apply to generated artifact SHA256
+`207e92d57f9ab69bf97cc9c79527b989523ae3b86c3fbfb5d8d79d53605c05bd`.
+Other artifacts and different host/provider configurations require their own checks.
+
+| Environment | Verified scope |
+| --- | --- |
+| Portable integration with synthetic host/callback boundaries; real disk SQLite and PostgreSQL | Empty-file receipt provenance and rejection on remote/unknown providers; cold restoration and legacy recovery; accepted stdout/stderr/outcome after storage failure and specific-operation status; callback classification; unknown early outcomes and additive receipt context |
+| Chromium module worker with production wrapper and public Pyodide APIs | Shared Python/shell files, 256 MiB transient scratch, 32 MiB binary shell operations, retained deltas, fresh-worker restoration and rejected links |
+| Open WebUI 0.12.2 native UI/Tool path; PostgreSQL and local storage | Three genuine UI/model calls: Python, same-page Bash, then fresh-browser saved-script rerun with an empty imported package initializer; 128 MiB scratch present while warm and absent after fresh restoration; original native input reference and unchanged File ID reuse; new/warm/restored context matches the acknowledged base operations |
+| Same native configuration, empty and nonempty retained files | Empty outputs including an output named `html` and Unicode names; duplicate basenames with distinct bytes; nonempty→empty→nonempty changes use new immutable File IDs; unchanged IDs reused; independent database/provider/callback checks and earlier a1 receipt reads |
+| Same native configuration, authenticated owner/recipient/foreign users | Owner/recipient inline downloads with exact bytes and suggested filenames; private/foreign denial; revocation denies recipient downloads and restored grants restore access; earlier saved links remain readable with their existing access controls |
+
+Native empty-file deletion was separately checked using a manually created native
+File with the exact metadata representation. Deletion of a Tool-issued empty File
+was not exercised end to end. Storage-failure and callback-error diagnostics use
+synthetic host/callback boundaries with real databases; native provider fault
+injection and a complete interruption matrix were not performed for this artifact.
+
+### Historical artifact: 0.2.0a1
+
+The following historical observations apply only to generated artifact SHA256
+`7c3a04c4d152f2fdd24e5fc24dbb039ee5756b01e3baea5b27e958dc7a0bfad7`.
+They do not extend the current artifact's qualification scope.
+
+| Environment | Verified scope |
+| --- | --- |
+| Portable integration with synthetic host/callback boundaries; real disk SQLite and PostgreSQL | Durable receipts, immutable blob reuse, CAS/retry, publication rollback, input authorization and version-one checkpoint recovery |
+| Chromium module worker with production wrapper and public Pyodide APIs | Shared Python/shell files, 256 MiB transient scratch, 32 MiB binary shell operations, retained deltas, fresh-worker restoration and rejected links |
+| Open WebUI 0.12.2 native UI/Tool path; PostgreSQL and local storage | Python followed by Bash in the same browser; 128 MiB warm scratch absent after fresh-browser restoration; saved-script rerun; unchanged script/output File ID reuse; original native CSV reference without duplicate upload |
+| Same native configuration, authenticated owner/recipient/foreign users | Owner and authorized-recipient inline downloads with exact bytes after reload; foreign/private-file denial; grant revocation blocks recipient downloads; native input deletion blocks warm/cold execution without advancing the head |
+
+These native observations do not establish a pristine upstream installation.
+No frontend patch was added for this integration. The installer minimum of
+0.12.0 remains a requirement checked against source contracts; this qualification
+does not establish runtime acceptance of 0.12.0.
+No remote S3/GCS/Azure provider qualification or general browser-memory capacity
+promise is made.
+
+The version-sensitive `execute:python` event is checked against upstream source;
+it is not documented as a stable public extension API. Requalify when that
+contract changes. The filesystem/bootstrap uses documented public Pyodide APIs
+and the public npm `just-bash/browser` export.
+The metadata-backed empty download and local deletion behavior are checked against
+official [0.12.0 file routes](https://github.com/open-webui/open-webui/blob/v0.12.0/backend/open_webui/routers/files.py)
+and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.12.2/backend/open_webui/storage/provider.py).
+These source checks do not establish runtime acceptance for every supported host.
 
 Portable Tool/build Python support is separate from the host's Python range.
-The examined upstream Open WebUI releases declare Python 3.11/3.12; this project
-does not override their requirement. No S3/GCS/Azure browser qualification is
-claimed. Contract tests, source comparison and build success are not stock UI
-sharing or browser-worker proof.
+This project does not override Open WebUI's own Python requirements.

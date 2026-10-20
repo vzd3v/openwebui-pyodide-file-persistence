@@ -22,6 +22,19 @@ SCHEMA_VERSION = 1
 class SaverError(Exception):
     """Safe, content-free failure suitable for a Tool result."""
 
+    def __init__(self, message: str, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class BrowserFailure(SaverError):
+    """Classified callback failure without copying host or browser error text."""
+
+    def __init__(self, message: str, error_code: str, phase: str):
+        super().__init__(message)
+        self.error_code = error_code
+        self.phase = phase
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
@@ -33,8 +46,8 @@ class Limits(StrictModel):
         ge=1,
         le=256,
         description=(
-            "Maximum regular files in the entire managed workspace "
-            "(including restored inputs); count, not bytes."
+            "Maximum retained regular files in the managed workspace "
+            "(scratch work/ is excluded); count, not bytes."
         ),
     )
     max_file_bytes: int = Field(
@@ -48,8 +61,8 @@ class Limits(StrictModel):
         ge=1,
         lt=HOST_SOCKET_LIMIT,
         description=(
-            "Maximum decoded bytes across the whole workspace, "
-            "including restored inputs and private files."
+            "Maximum decoded bytes across retained files, "
+            "excluding transient work/ and referenced native inputs."
         ),
     )
     max_envelope_bytes: int = Field(
@@ -84,7 +97,8 @@ class Limits(StrictModel):
 class Action(StrictModel):
     action: Literal["execute", "retry", "status"] = "execute"
     code: str = ""
-    language: Literal["python"] = "python"
+    language: Literal["python", "bash"] = "python"
+    cwd: str = "work"
     operation_id: str = ""
 
     @model_validator(mode="after")
@@ -96,22 +110,14 @@ class Action(StrictModel):
             raise ValueError("retry requires operation_id and no code; status accepts no code")
         if self.operation_id and not re.fullmatch(r"[0-9a-f-]{36}", self.operation_id):
             raise ValueError("invalid operation_id")
+        if self.cwd != ".":
+            safe_relative_path(self.cwd)
         return self
 
 
 class TransferFile(StrictModel):
     path: str
     data: str
-
-
-class Envelope(StrictModel):
-    version: Literal[1]
-    operation_id: str
-    nonce: str
-    outcome: Literal["ok", "python_error", "busy", "snapshot_error"]
-    stdout: str
-    stderr: str
-    files: list[TransferFile]
 
 
 class ManifestEntry(StrictModel):
@@ -126,6 +132,13 @@ class FileSlot(StrictModel):
     sha256: str
     size: int = Field(ge=0)
     committed: bool = False
+    representation: Literal["provider", "empty"] = "provider"
+
+    @model_validator(mode="after")
+    def validate_representation(self) -> FileSlot:
+        if self.representation == "empty" and (self.size != 0 or self.sha256 != digest(b"")):
+            raise ValueError("Empty File representation requires exact empty bytes")
+        return self
 
 
 class Receipt(StrictModel):
@@ -135,6 +148,8 @@ class Receipt(StrictModel):
     chat_id: str
     message_id: str
     base_revision: int
+    base_operation_id: str | None = None
+    browser_warm: bool | None = None
     state: Literal["allocated", "saved", "accepted", "conflict", "published"] = "allocated"
     checkpoint: FileSlot
     files: list[ManifestEntry] = Field(default_factory=list)
@@ -144,6 +159,14 @@ class Receipt(StrictModel):
     python_ok: bool = False
     stdout: str = ""
     stderr: str = ""
+    checkpoint_version: Literal[1, 2] = 1
+    blobs: list[FileSlot] = Field(default_factory=list)
+    inputs: list[FileSlot] = Field(default_factory=list)
+    legacy_paths: list[str] = Field(default_factory=list)
+    language: Literal["python", "bash"] = "python"
+    exit_code: int = 0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +278,13 @@ def issued_paths(current: list[ManifestEntry], baseline: list[ManifestEntry]) ->
     }
 
 
-def markdown_link(name: str, file_id: str) -> str:
+def download_url(file_id: str, representation: str = "provider") -> str:
+    # A fixed nonreserved component avoids the earlier native /content/html route.
+    # The native File row supplies the actual attachment name, not this component.
+    suffix = "/download" if representation == "empty" else ""
+    return f"/api/v1/files/{file_id}/content{suffix}?attachment=true"
+
+
+def markdown_link(name: str, file_id: str, representation: str = "provider") -> str:
     label = re.sub(r"([\\`*_{}\[\]()<>!|])", r"\\\1", name)
-    return f"[{label}](/api/v1/files/{file_id}/content?attachment=true)"
+    return f"[{label}]({download_url(file_id, representation)})"

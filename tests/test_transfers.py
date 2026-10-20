@@ -4,19 +4,19 @@ import ast
 from uuid import uuid4
 
 import pytest
+from conftest import checkpoint_bytes
 from pydantic import ValidationError
 
 from pyodide_file_saver.browser_execution import (
-    checkpoint_bytes,
-    consume_callback,
-    make_wrapper,
     read_checkpoint,
 )
+from pyodide_file_saver.browser_workspace import workspace_reply, workspace_wrapper
 from pyodide_file_saver.contracts import (
     Action,
     FileBytes,
     Limits,
     SaverError,
+    decode_files,
     encode_files,
     json_text,
     markdown_link,
@@ -68,7 +68,8 @@ def test_actual_decoded_boundaries(dimension: str, delta: int) -> None:
 def test_callback_rejects_untrusted_or_incomplete_data(damage: str) -> None:
     limits = Limits(max_text_bytes=8, max_envelope_bytes=1024)
     envelope: dict[str, object] = {
-        "version": 1,
+        "version": 2,
+        "phase": "execute",
         "operation_id": "op",
         "nonce": "nonce",
         "outcome": "ok",
@@ -88,21 +89,19 @@ def test_callback_rejects_untrusted_or_incomplete_data(damage: str) -> None:
         envelope["outcome"] = "busy"
     raw = json_text(envelope)
     with pytest.raises(SaverError):
-        consume_callback(
+        reply = workspace_reply(
             {"result": raw[:-1] if damage == "truncated" else raw}, "op", "nonce", limits
         )
+        decode_files(reply.files, limits)
 
 
 def test_unicode_bytes_preload_hints_and_canonical_links() -> None:
     files = [FileBytes("outputs/Отчёт [draft].xlsx", b"\x00\xffbinary")]
     assert read_checkpoint(checkpoint_bytes(files), Limits()) == files
-    wrapper, _ = make_wrapper(
-        str(uuid4()),
-        "from docx import Document\nimport pandas as pd\npd.DataFrame().to_excel('outputs/a.xlsx')",
-        files,
-        Limits(),
-        ["socket"],
+    code = (
+        "from docx import Document\nimport pandas as pd\npd.DataFrame().to_excel('outputs/a.xlsx')"
     )
+    wrapper, _ = workspace_wrapper({"operation_id": str(uuid4()), "language": "python"}, code)
     ast.parse(wrapper)  # Never execute browser Python on the backend.
     for package in ("docx", "pandas", "openpyxl"):
         assert f"# import {package}\n" in wrapper
