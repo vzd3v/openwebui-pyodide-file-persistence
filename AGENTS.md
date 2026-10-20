@@ -1,10 +1,16 @@
 # Agent Instructions
 
+This is a public, standalone open-source repository. Treat every tracked
+file, commit and GitHub contribution as public OSS material, even while repository
+visibility is temporarily private. Include only portable, redistributable content
+appropriate for public distribution.
+
 Read [README.md](README.md) for project scope and compatibility status, and
 [CONTRIBUTING.md](CONTRIBUTING.md) for the branch, pull-request and check workflow.
 
-Optional local instructions: read [agents.local.md](agents.local.md) when present.
-It is intentionally untracked; never force-add it.
+If [agents.local.md](agents.local.md) exists, read it before making changes.
+It contains local maintainer instructions, is gitignored and must never be
+force-added. Public contributors do not need this optional local file.
 
 ## Working on changes
 
