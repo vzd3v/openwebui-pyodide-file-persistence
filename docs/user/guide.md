@@ -131,8 +131,7 @@ S3, GCS, Azure and unknown providers reject new empty retained files explicitly:
 their native deletion path cannot safely clean up this representation. Existing
 receipt-backed empty Files remain readable after a storage configuration change.
 Unmarked native files with missing provider bytes never become empty files.
-No automatic
-pruning, deletion or resurrection of saved Files is performed.
+No automatic pruning, deletion or resurrection of saved Files is performed.
 Callback failures include a content-free `error_code` and `phase` when available;
 raw host/provider error text is not returned. Issued file records also include
 the retained relative path, byte size and SHA-256 alongside the download link.
@@ -146,3 +145,8 @@ legacy file paths. That compatibility copy
 is independent of the original upload; new native input references use the live
 authorization rules above. Manual code blocks and unrelated browser files are
 not automatically imported. Keep existing browser persistence enabled.
+
+Older saved data can be read by the new version; older binaries cannot read all
+new receipts. Preserve saved Files and coordination data when stopping or changing
+versions; see [saved-data compatibility](../dev/compatibility.md#saved-data-compatibility)
+before attempting a downgrade.

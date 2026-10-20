@@ -72,15 +72,14 @@ notation, booleans, unknown fields and out-of-range values remain invalid.
 
 ## Remove / rollback
 
-For a non-destructive rollback, disable or deselect this Tool and restore the
-previous Tool source if necessary. You can remove the Tool through normal host
-controls without deleting saved Files or its tables.
+To stop new executions, disable or deselect this Tool. You can remove the Tool
+through normal host controls without deleting saved Files or its tables. Before
+replacing its source, check [saved-data compatibility](../dev/compatibility.md#saved-data-compatibility);
+an older binary may reject receipts written by a newer version.
 
 Do not clear browser data, change persistence settings or drop the tables as part
 of rollback. Existing links use ordinary host routes independent of Tool loading;
 access still depends on the Files, provider bytes and Open WebUI permissions.
-Reinstall the same compatible version to resume from acknowledged checkpoints.
-Other database schema versions are rejected. Version-one checkpoints remain
-readable by the new Tool; old Tool versions cannot read newly acknowledged
-version-two manifests. Rollback preserves all existing files but may require
-keeping the new Tool available for recovery of its own operations.
+Reinstall a compatible version to resume from acknowledged checkpoints. Preserve
+the version needed to recover its operations; do not force a downgrade by editing
+receipts or deleting data. Other database schema versions are rejected.
