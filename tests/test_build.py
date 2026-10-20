@@ -127,6 +127,10 @@ def test_build_cli_rejects_import_binding_collisions(
     shutil.copyfile(root / "pyproject.toml", tmp_path / "pyproject.toml")
     source = tmp_path / "src" / "pyodide_file_saver"
     source.mkdir(parents=True)
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "browser-shell.js").write_text("/* synthetic browser asset */")
+    for name in ("browser_asset", "browser_workspace", "workspace_manifest", "workspace_execution"):
+        (source / f"{name}.py").write_text("")
     for name, content in {
         "contracts": first,
         "workspace_state": second,
@@ -164,7 +168,10 @@ def test_generated_tool_initializes_publishes_and_restores(
 
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
-            files = [FileBytes("private.txt", b"private"), FileBytes("outputs/a.txt", b"issued")]
+            files = [
+                FileBytes("scripts/private.txt", b"private"),
+                FileBytes("outputs/a.txt", b"issued"),
+            ]
             browser = BrowserReply(files)
             result = await host.call(browser, tool=tool)
             assert result["state"] == "published" and browser.calls == 1
@@ -193,6 +200,9 @@ def test_generated_tool_initializes_publishes_and_restores(
             fresh = BrowserReply(files)
             again = await host.call(fresh, tool=cast(type[Tools], module.Tools)())
             assert again["state"] == "published" and again["issued_files"] == []
-            assert fresh.calls == 1 and fresh.restored == [files]
+            assert fresh.calls == 1
+            assert [{f.path: f.data for f in batch} for batch in fresh.restored] == [
+                {f.path: f.data for f in files}
+            ]
 
     asyncio.run(scenario())

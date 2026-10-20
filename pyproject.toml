@@ -1,7 +1,7 @@
 [project]
 name = "openwebui-pyodide-file-persistence"
-version = "0.1.0a2"
-description = "Durable browser Python workspaces and shared-chat file links for Open WebUI"
+version = "0.2.0a1"
+description = "Shared browser Python and Bash workspaces with durable files for Open WebUI"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = ["pydantic==2.13.4", "sqlalchemy==2.0.50"]

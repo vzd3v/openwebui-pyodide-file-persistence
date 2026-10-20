@@ -38,6 +38,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
       - run: uv sync --locked
       - run: uv run ruff format --check src scripts tests
       - run: uv run ruff check src scripts tests
@@ -45,3 +51,25 @@ jobs:
       - run: uv run python scripts/build_tool.py --check
       - run: timeout 30s uv run pytest -q -m 'not integration'
       - run: timeout 300s uv run pytest -q -m integration
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: uv sync --locked
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run build
+      - run: npm exec playwright-core -- install --with-deps chromium
+      - run: npm test

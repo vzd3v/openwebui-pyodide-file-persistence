@@ -292,7 +292,10 @@ class WorkspaceState:
             receipt = await self.load(session, operation_id, context, lock=True)
             if receipt.state != "saved":
                 return receipt
-            if not receipt.checkpoint.committed:
+            if not receipt.checkpoint.committed or (
+                receipt.checkpoint_version == 2
+                and not all(blob.committed for blob in receipt.blobs)
+            ):
                 raise SaverError("Checkpoint is not committed")
             changed = await session.execute(
                 update(self.workspace)

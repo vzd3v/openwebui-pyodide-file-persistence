@@ -36,13 +36,23 @@ from pyodide_file_saver.contracts import (
     JSON_VALUE,
     BoundContext,
     FileBytes,
+    FileSlot,
     Limits,
+    Receipt,
     TransferFile,
     decode_files,
+    digest,
     encode_files,
+    issued_paths,
     json_text,
 )
+from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter
 from pyodide_file_saver.tool import Tools
+
+
+def checkpoint_bytes(files: list[FileBytes]) -> bytes:
+    """Synthetic persisted-v1 fixture encoder; new executions only write v2."""
+    return json_text({"version": 1, "files": encode_files(files)}).encode()
 
 
 @dataclass(frozen=True)
@@ -117,11 +127,11 @@ class BrowserReply:
         self.files, self.outcome = files, outcome
         self.calls = 0
         self.restored: list[list[FileBytes]] = []
+        self.restore_batches: list[FileBytes] = []
         self.entered = asyncio.Event()
         self.release: asyncio.Event | None = None
 
     async def __call__(self, payload: dict[str, JsonValue]) -> object:
-        self.calls += 1
         data = payload["data"]
         assert isinstance(data, dict) and data["files"] == []
         code = data["code"]
@@ -141,24 +151,68 @@ class BrowserReply:
                 assert isinstance(parsed, dict)
                 config = parsed
         assert config is not None and isinstance(config["restore"], list)
-        self.restored.append(
-            decode_files(
-                [TransferFile.model_validate(item) for item in config["restore"]], Limits()
-            )
+        if config.get("phase") == "prepare":
+            return {
+                "result": json_text(
+                    {
+                        "version": 2,
+                        "operation_id": data["id"],
+                        "nonce": config["nonce"],
+                        "phase": "prepare",
+                        "warm": False,
+                        "shell_ready": False,
+                    }
+                )
+            }
+        batch = decode_files(
+            [TransferFile.model_validate(item) for item in config["restore"]], Limits()
         )
+        if config.get("phase") == "restore":
+            self.restore_batches.extend(batch)
+            return {
+                "result": json_text(
+                    {
+                        "version": 2,
+                        "operation_id": data["id"],
+                        "nonce": config["nonce"],
+                        "phase": "restore",
+                    }
+                )
+            }
+        self.calls += 1
+        self.restored.append([*self.restore_batches, *batch])
+        self.restore_batches.clear()
         self.entered.set()
         if self.release:
             await self.release.wait()
         return {
             "result": json_text(
                 {
-                    "version": 1,
+                    "version": 2,
+                    "phase": "execute",
+                    "manifest": [file.manifest().model_dump() for file in self.files],
+                    "exit_code": 0 if self.outcome == "ok" else 1,
                     "operation_id": data["id"],
                     "nonce": config["nonce"],
-                    "outcome": self.outcome,
+                    "outcome": "ok" if self.outcome == "ok" else "execution_error",
                     "stdout": "synthetic output",
                     "stderr": "",
-                    "files": encode_files(self.files),
+                    "files": encode_files(
+                        [
+                            file
+                            for file in self.files
+                            if not any(
+                                isinstance(item, dict)
+                                and item.get("path") == file.path
+                                and item.get("sha256") == file.manifest().sha256
+                                for item in (
+                                    config["baseline"]
+                                    if isinstance(config["baseline"], list)
+                                    else []
+                                )
+                            )
+                        ]
+                    ),
                 }
             ),
             "stdout": None,
@@ -338,6 +392,32 @@ class HostHarness:
         )
         assert isinstance(result, dict)
         return result
+
+    async def seed_legacy(self, files: list[FileBytes]) -> Receipt:
+        """Create an acknowledged-format v1 checkpoint for compatibility tests."""
+        adapter = OpenWebUIAdapter()
+        await adapter.initialize()
+        receipt, _ = await adapter.state.allocate(self.context)
+        checkpoint = checkpoint_bytes(files)
+        receipt.files = [file.manifest() for file in files]
+        receipt.execution_completed, receipt.python_ok = True, True
+        receipt.checkpoint.sha256, receipt.checkpoint.size = digest(checkpoint), len(checkpoint)
+        selected = issued_paths(receipt.files, receipt.baseline)
+        receipt.outputs = [
+            FileSlot(
+                path=file.path,
+                file_id=str(uuid4()),
+                sha256=file.manifest().sha256,
+                size=len(file.data),
+            )
+            for file in files
+            if file.path in selected
+        ]
+        async with adapter.state.transaction() as session:
+            await adapter.state.put(session, receipt)
+        return await adapter.store_slot(
+            self.context, receipt.operation_id, None, checkpoint, Limits().max_envelope_bytes
+        )
 
     async def file_ids(self) -> list[str]:
         async with self.engine.connect() as connection:

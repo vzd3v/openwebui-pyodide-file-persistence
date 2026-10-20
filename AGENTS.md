@@ -24,6 +24,7 @@ force-added. Public contributors do not need this optional local file.
 - Follow [verification instructions](docs/dev/testing.md). Report skipped checks
   explicitly; simulated host callbacks are not browser acceptance evidence.
 - Edit source modules, not generated `dist/` files. Build deterministically with
+  `npm ci --ignore-scripts && npm run build`, then
   `python3 scripts/build_tool.py --check`; do not commit generated artifacts.
 
 ## Design constraints

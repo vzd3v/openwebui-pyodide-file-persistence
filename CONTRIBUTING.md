@@ -17,11 +17,13 @@ pull requests.
 
 ## Development
 
-Use Python 3.11 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Use Node.js 22+, Python 3.11+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 From a clone of the repository:
 
 ```sh
 uv sync --locked --python 3.12
+npm ci --ignore-scripts
+npm run build
 ```
 
 The environment is local to this checkout. Do not install it into an Open WebUI
@@ -43,7 +45,7 @@ This project uses [GitHub Flow](https://docs.github.com/en/get-started/using-git
 5. Address review feedback. A maintainer reviews and merges after CI passes;
    delete the working branch after merge. Do not push changes directly to `main`.
 
-CI runs on pull requests and on `main`. It checks formatting, lint, strict types,
+CI runs on pull requests and on `main`. It builds the pinned browser dependency and checks formatting, lint, strict types,
 reproducible builds and tests on Python 3.11–3.15 with disk SQLite and PostgreSQL.
 This portable Tool matrix does not extend Open WebUI's own host Python range.
 Do not bypass failing checks or describe a skipped check as passing.
@@ -61,4 +63,5 @@ Do not bypass failing checks or describe a skipped check as passing.
 - Commit source, not generated `dist/` artifacts. Building the native Tool does
   not require a running Open WebUI instance.
 
-The project license is [MIT](LICENSE).
+Integration code is [MIT](LICENSE). Bundled dependency licenses are described in
+[third-party notices](THIRD_PARTY_NOTICES.txt) and embedded in the generated Tool.

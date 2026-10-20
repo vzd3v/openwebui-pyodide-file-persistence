@@ -33,8 +33,8 @@ class Limits(StrictModel):
         ge=1,
         le=256,
         description=(
-            "Maximum regular files in the entire managed workspace "
-            "(including restored inputs); count, not bytes."
+            "Maximum retained regular files in the managed workspace "
+            "(scratch work/ is excluded); count, not bytes."
         ),
     )
     max_file_bytes: int = Field(
@@ -48,8 +48,8 @@ class Limits(StrictModel):
         ge=1,
         lt=HOST_SOCKET_LIMIT,
         description=(
-            "Maximum decoded bytes across the whole workspace, "
-            "including restored inputs and private files."
+            "Maximum decoded bytes across retained files, "
+            "excluding transient work/ and referenced native inputs."
         ),
     )
     max_envelope_bytes: int = Field(
@@ -84,7 +84,8 @@ class Limits(StrictModel):
 class Action(StrictModel):
     action: Literal["execute", "retry", "status"] = "execute"
     code: str = ""
-    language: Literal["python"] = "python"
+    language: Literal["python", "bash"] = "python"
+    cwd: str = "work"
     operation_id: str = ""
 
     @model_validator(mode="after")
@@ -96,22 +97,14 @@ class Action(StrictModel):
             raise ValueError("retry requires operation_id and no code; status accepts no code")
         if self.operation_id and not re.fullmatch(r"[0-9a-f-]{36}", self.operation_id):
             raise ValueError("invalid operation_id")
+        if self.cwd != ".":
+            safe_relative_path(self.cwd)
         return self
 
 
 class TransferFile(StrictModel):
     path: str
     data: str
-
-
-class Envelope(StrictModel):
-    version: Literal[1]
-    operation_id: str
-    nonce: str
-    outcome: Literal["ok", "python_error", "busy", "snapshot_error"]
-    stdout: str
-    stderr: str
-    files: list[TransferFile]
 
 
 class ManifestEntry(StrictModel):
@@ -144,6 +137,14 @@ class Receipt(StrictModel):
     python_ok: bool = False
     stdout: str = ""
     stderr: str = ""
+    checkpoint_version: Literal[1, 2] = 1
+    blobs: list[FileSlot] = Field(default_factory=list)
+    inputs: list[FileSlot] = Field(default_factory=list)
+    legacy_paths: list[str] = Field(default_factory=list)
+    language: Literal["python", "bash"] = "python"
+    exit_code: int = 0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)

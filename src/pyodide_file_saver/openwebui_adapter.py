@@ -22,14 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from .contracts import (
     JSON_VALUE,
     BoundContext,
-    FileBytes,
     FileSlot,
     Limits,
     Receipt,
     SaverError,
     digest,
     safe_filename,
-    validate_files,
 )
 from .workspace_state import WorkspaceState
 
@@ -378,6 +376,91 @@ class OpenWebUIAdapter:
             raise SaverError("Provider bytes are missing or unavailable") from error
         return data
 
+    async def authorize_file(
+        self, context: BoundContext, file_id: str, *, owned: bool = False
+    ) -> tuple[str, str]:
+        """Recheck host identity/grants without materializing provider bytes."""
+        async with self.state.sessions() as session:
+            row = (
+                (await session.execute(select(self.files).where(self.files.c.id == file_id)))
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise SaverError("Saved or attached File was deleted; it will not be recreated")
+            if row["user_id"] != context.actor_id:
+                user = await self.users_api.get_user_by_id(context.actor_id)
+                if (
+                    owned
+                    or user is None
+                    or not (
+                        user.role == "admin"
+                        or await self.file_access(file_id, "read", user, db=session) is True
+                    )
+                ):
+                    raise SaverError("File is not readable by this actor")
+            return require_string(row["filename"]), require_string(row["path"])
+
+    async def referenced_inputs(
+        self,
+        context: BoundContext,
+        attachments: list[dict[str, JsonValue]],
+        previous: list[FileSlot],
+        limits: Limits,
+    ) -> tuple[list[FileSlot], list[str]]:
+        result = [slot.model_copy(deep=True) for slot in previous]
+        fresh: list[str] = []
+        seen: set[str] = set()
+        for slot in previous:
+            await self.authorize_file(context, slot.file_id)
+            seen.add(slot.file_id)
+        if len(attachments) > limits.max_files:
+            raise SaverError("Attached input count exceeds the configured limit")
+        for item in attachments:
+            if item.get("type") not in {None, "file"}:
+                continue
+            file_id = require_string(item.get("id"))
+            if file_id in seen:
+                continue
+            seen.add(file_id)
+            if len(file_id) > 128 or not all(char.isalnum() or char in "-_" for char in file_id):
+                raise SaverError("Unsupported attached File identifier")
+            name, _ = await self.authorize_file(context, file_id)
+            # Skip this Tool's own issued attachments only after independent receipt proof.
+            async with self.state.sessions() as session:
+                raw = await session.scalar(
+                    select(self.files.c.meta).where(self.files.c.id == file_id)
+                )
+            hint = json_object(raw or {}).get("pyodide_file_saver_operation")
+            if isinstance(hint, str):
+                try:
+                    own = await self.state.get(context, hint)
+                except SaverError:
+                    own = None
+                if own and any(slot.file_id == file_id for slot in own.outputs):
+                    continue
+            path = f"inputs/{file_id}/{safe_filename(name.replace(chr(92), '/').split('/')[-1])}"
+            old = next(
+                (slot for slot in previous if slot.file_id == file_id and slot.path == path), None
+            )
+            if old:
+                result.append(old.model_copy(deep=True))
+            else:
+                data = await self.read_file(context, file_id, limits.max_file_bytes)
+                fresh.append(path)
+                result.append(
+                    FileSlot(
+                        path=path,
+                        file_id=file_id,
+                        sha256=digest(data),
+                        size=len(data),
+                        committed=True,
+                    )
+                )
+        if len(result) > limits.max_files:
+            raise SaverError("Referenced input count exceeds the configured limit")
+        return result, fresh
+
     @staticmethod
     def _read_bounded(path: str, maximum: int) -> bytes:
         with Path(path).open("rb") as stream:
@@ -394,67 +477,11 @@ class OpenWebUIAdapter:
             raise SaverError("Saved File bytes do not match their acknowledged receipt")
         return data
 
-    async def input_files(
-        self,
-        context: BoundContext,
-        attachments: list[dict[str, JsonValue]],
-        restore: list[FileBytes],
-        limits: Limits,
-    ) -> list[FileBytes]:
-        result = {file.path: file for file in restore}
-        imported: set[str] = set()
-        for item in attachments:
-            if item.get("type") not in {None, "file"}:
-                continue
-            file_id = require_string(item.get("id"))
-            if file_id in imported:
-                continue
-            imported.add(file_id)
-            if len(file_id) > 128 or not all(char.isalnum() or char in "-_" for char in file_id):
-                raise SaverError("Unsupported attached File identifier")
-            # Already checkpointed input bytes remain usable even when the
-            # original upload was later removed or renamed.
-            if any(path.startswith(f"inputs/{file_id}/") for path in result):
-                continue
-            # Never trust a browser-supplied filename or ID as a destination path.
-            async with self.state.sessions() as session:
-                row = (
-                    (
-                        await session.execute(
-                            select(self.files.c.filename, self.files.c.meta).where(
-                                self.files.c.id == file_id
-                            )
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-            if row is None:
-                raise SaverError("Attached File was deleted or is unavailable")
-            metadata = json_object(row["meta"] or {})
-            hint = metadata.get("pyodide_file_saver_operation")
-            if isinstance(hint, str):
-                # Metadata is only a lookup hint. A bounded exact receipt lookup
-                # must independently prove actor/chat binding AND output identity.
-                try:
-                    own = await self.state.get(context, hint)
-                except SaverError:
-                    own = None
-                if own and any(slot.file_id == file_id for slot in own.outputs):
-                    continue
-            filename = row["filename"]
-            name = safe_filename(require_string(filename).replace("\\", "/").split("/")[-1])
-            alias = f"inputs/{file_id}/{name}"
-            data = await self.read_file(context, file_id, limits.max_file_bytes)
-            result[alias] = FileBytes(alias, data)
-            validate_files(list(result.values()), limits)
-        return list(result.values())
-
     @staticmethod
     def slot(receipt: Receipt, path: str | None) -> FileSlot:
         if path is None:
             return receipt.checkpoint
-        for output in receipt.outputs:
+        for output in [*receipt.blobs, *receipt.outputs]:
             if output.path == path:
                 return output
         raise SaverError("Output was not reserved by this operation")
@@ -520,7 +547,14 @@ class OpenWebUIAdapter:
                     )
                 )
                 elected.committed = True
+                for output in receipt.outputs:
+                    if output.file_id == elected.file_id:
+                        output.committed = True
                 if path is None:
+                    if receipt.checkpoint_version == 2 and not all(
+                        blob.committed for blob in receipt.blobs
+                    ):
+                        raise SaverError("Retained blobs must be committed before the manifest")
                     receipt.state = "saved"
                 await self.state.put(session, receipt)
         # Lost attempts leave unacknowledged provider objects, never delete data

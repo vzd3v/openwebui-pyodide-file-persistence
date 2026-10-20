@@ -1,0 +1,7 @@
+The browser shell embeds just-bash 3.6.0 (Apache-2.0), by Vercel, Inc.
+Its transitive browser libraries include diff, sprintf-js, turndown and re2js.
+The maintainer build appends their complete package license texts to the
+embedded browser asset. Those licenses apply to their respective code;
+the integration code in this repository remains MIT licensed.
+Compression is disabled by a consumer build adapter; upstream sources are
+not modified. The public just-bash/browser export is the build entry point.

@@ -11,11 +11,12 @@ import pytest
 from conftest import BrowserReply, DatabaseCase, HostHarness, open_host
 from pydantic import JsonValue
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from pyodide_file_saver.contracts import BoundContext, FileBytes, Limits
 from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter, json_object
-from pyodide_file_saver.tool import Tools
+from pyodide_file_saver.tool import Tools, resume_publication
 
 pytestmark = pytest.mark.integration
 HostFactory = Callable[[AsyncEngine, str | None], HostHarness]
@@ -63,20 +64,31 @@ def operation(result: dict[str, JsonValue]) -> str:
 
 
 @pytest.mark.parametrize("fault", ["provider", "message"])
-def test_saved_retry_converges_without_rerunning_python(
+def test_legacy_saved_retry_converges_without_rerunning_python(
     database_case: DatabaseCase, host_factory: HostFactory, fault: str
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
             browser = BrowserReply(
-                [FileBytes("working.txt", b"private"), FileBytes("outputs/Отчёт.txt", b"issued")]
+                [
+                    FileBytes("scripts/working.txt", b"private"),
+                    FileBytes("outputs/Отчёт.txt", b"issued"),
+                ]
             )
             host.provider.fail_attempts = {2} if fault == "provider" else set()
             if fault == "message":
                 await OpenWebUIAdapter().initialize()
                 await publication_trigger(host, True)
-            failed = await host.call(browser)
-            assert failed["incomplete"] is True and "issued_files" not in failed
+            legacy = await host.seed_legacy(browser.files)
+            try:
+                await resume_publication(
+                    OpenWebUIAdapter(), host.context, legacy.operation_id, Limits()
+                )
+                raise AssertionError("Expected synthetic legacy publication failure")
+            except (ValueError, DBAPIError):
+                pass
+            failed: dict[str, JsonValue] = {"operation_id": legacy.operation_id}
+
             adapter = OpenWebUIAdapter()
             saved = await adapter.state.get(host.context, operation(failed))
             assert saved.checkpoint.committed and saved.state == "accepted"
@@ -110,7 +122,7 @@ def test_saved_retry_converges_without_rerunning_python(
                 *(host.call(action="retry", operation_id=saved.operation_id) for _ in range(2))
             )
             assert all(result["state"] == "published" for result in results)
-            assert browser.calls == 1 and len(await host.file_ids()) == 2
+            assert len(await host.file_ids()) == 2
             receipt = await OpenWebUIAdapter().state.get(host.context, saved.operation_id)
             assert len(receipt.outputs) == 1
             assert (
@@ -158,17 +170,19 @@ def test_private_error_output_stays_private_until_changed_and_deleted_issuance_i
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
             original = [
-                FileBytes("working.txt", b"private"),
+                FileBytes("scripts/working.txt", b"private"),
                 FileBytes("outputs/draft.txt", b"private error output"),
             ]
             failed = await host.call(BrowserReply(original, "python_error"))
             assert failed["workspace_saved"] is True and failed["python_ok"] is False
-            browser = BrowserReply(original + [FileBytes("calculation.txt", b"42")])
+            browser = BrowserReply(original + [FileBytes("scripts/calculation.txt", b"42")])
             later = await host.call(browser)
-            assert browser.restored == [original]
+            assert [{f.path: f.data for f in batch} for batch in browser.restored] == [
+                {f.path: f.data for f in original}
+            ]
             assert later["state"] == "published" and later["issued_files"] == []
             changed = [
-                FileBytes("working.txt", b"private"),
+                FileBytes("scripts/working.txt", b"private"),
                 FileBytes("outputs/draft.txt", b"issued draft"),
             ]
             issued = await host.call(BrowserReply(changed))
@@ -177,7 +191,7 @@ def test_private_error_output_stays_private_until_changed_and_deleted_issuance_i
             async with host.engine.begin() as connection:
                 await connection.execute(delete(host.files).where(host.files.c.id == output_id))
             unchanged = await host.call(BrowserReply(changed))
-            assert unchanged["state"] == "published" and unchanged["issued_files"] == []
+            assert unchanged["incomplete"] is True and "issued_files" not in unchanged
             assert output_id not in await host.file_ids()
 
     asyncio.run(scenario())
@@ -197,12 +211,10 @@ def test_input_basename_collisions_and_checkpointed_edits_survive_original_delet
             attachments: list[dict[str, JsonValue]] = [
                 {"type": "file", "id": file_id} for file_id in (first, second)
             ]
-            browser = BrowserReply(aliases)
-            assert (await host.call(browser, files=attachments))["state"] == "published"
-            assert {file.path: file.data for file in browser.restored[0]} == {
-                aliases[0].path: b"first",
-                aliases[1].path: b"second",
-            }
+            legacy = await host.seed_legacy(aliases)
+            await resume_publication(
+                OpenWebUIAdapter(), host.context, legacy.operation_id, Limits()
+            )
             async with host.engine.begin() as connection:
                 await connection.execute(delete(host.files).where(host.files.c.id == first))
             fresh = BrowserReply(aliases)
@@ -289,10 +301,12 @@ def test_concurrent_provider_attempts_elect_one_immutable_file(
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
             host.provider.fail_attempts = {2}
-            result = await host.call(
-                BrowserReply([FileBytes("outputs/a.txt", b"complete issued bytes")])
-            )
-            assert result["incomplete"] is True
+            legacy = await host.seed_legacy([FileBytes("outputs/a.txt", b"complete issued bytes")])
+            with pytest.raises(ValueError):
+                await resume_publication(
+                    OpenWebUIAdapter(), host.context, legacy.operation_id, Limits()
+                )
+            result: dict[str, JsonValue] = {"operation_id": legacy.operation_id}
             host.provider.fail_attempts.clear()
             host.provider.barrier = Barrier(2)
             host.provider.pause_attempt = 4
@@ -375,15 +389,17 @@ def test_file_row_and_receipt_commit_marker_roll_back_together(
                             "BEGIN SELECT RAISE(ABORT, 'Synthetic receipt rejection'); END"
                         )
                     )
-            browser = BrowserReply([FileBytes("working.txt", b"received but not committed")])
+            browser = BrowserReply(
+                [FileBytes("scripts/working.txt", b"received but not committed")]
+            )
             result = await host.call(browser)
             assert result["incomplete"] is True
             receipt = await adapter.state.get(host.context, operation(result))
             assert receipt.state == "allocated" and not receipt.checkpoint.committed
-            assert await host.file_ids() == [] and len(host.provider.uploads) == 1
+            assert len(await host.file_ids()) == 1 and len(host.provider.uploads) == 2
             retry = await host.call(action="retry", operation_id=receipt.operation_id)
             assert retry["incomplete"] is True and browser.calls == 1
-            assert len(host.provider.uploads) == 1
+            assert len(host.provider.uploads) == 2
 
     asyncio.run(scenario())
 
@@ -394,8 +410,8 @@ def test_unreceived_interrupted_work_never_replaces_acknowledged_head(
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
-            prior = await host.call(BrowserReply([FileBytes("working.txt", b"saved")]))
-            browser = BrowserReply([FileBytes("working.txt", b"not received")])
+            prior = await host.call(BrowserReply([FileBytes("scripts/working.txt", b"saved")]))
+            browser = BrowserReply([FileBytes("scripts/working.txt", b"not received")])
             browser.release = asyncio.Event()
             tool = Tools()
             tool.valves.callback_timeout_seconds = 1
@@ -414,12 +430,12 @@ def test_unreceived_interrupted_work_never_replaces_acknowledged_head(
             adapter = OpenWebUIAdapter()
             _, head = await adapter.state.allocate(host.context)
             assert head and head.operation_id == operation(prior)
-            assert len(await host.file_ids()) == 1
+            assert len(await host.file_ids()) == 2
 
     asyncio.run(scenario())
 
 
-def test_empty_issued_file_preserves_checkpoint_but_reports_provider_rejection(
+def test_empty_issued_file_rejection_does_not_acknowledge_partial_checkpoint(
     database_case: DatabaseCase, host_factory: HostFactory
 ) -> None:
     async def scenario() -> None:
@@ -428,7 +444,7 @@ def test_empty_issued_file_preserves_checkpoint_but_reports_provider_rejection(
             assert result["incomplete"] is True
             adapter = OpenWebUIAdapter()
             receipt = await adapter.state.get(host.context, operation(result))
-            assert receipt.checkpoint.committed and not receipt.outputs[0].committed
-            assert len(await host.file_ids()) == 1
+            assert not receipt.checkpoint.committed and not receipt.outputs[0].committed
+            assert len(await host.file_ids()) == 0
 
     asyncio.run(scenario())

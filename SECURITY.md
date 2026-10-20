@@ -36,15 +36,25 @@ for qualification of a new build or environment.
   about logging elsewhere in Open WebUI or its configured providers.
 - Bytes are stored without extraction/indexing/inline HTML. Downloads use
   normal authenticated content routes, not public/signed URLs.
-- Actual decoded/serialized bounds apply below stock 16 MiB callbacks and
+- Retained transfer bounds apply below stock 16 MiB callbacks and
   60-second frontend timeout. Backend timeout does not confirm worker death.
 - Remote provider `get_file` can materialize a whole object before bounded
   local reads; no unverified remote resource-bound promise is made.
 - Host/provider empty-upload policy still applies: a zero-byte issued file may
-  remain privately checkpointed with incomplete publication, never a false link.
+  prevent a complete checkpoint, never produce a false link.
 - Checkpoints are owner/admin-visible ordinary private Files, not a hidden
   vault. Deletion applies. No pruning/GC; failed provider attempts can leave
   unacknowledged objects.
 - `outputs/` is agent intent, not secret classification. Review before sharing.
+- Shell paths are rooted in one workspace; they do not grant native OS/process
+  access. Python still shares the browser interpreter's trust boundary. This
+  integration is not a security boundary against arbitrary code in that worker.
+- Scratch/full logs are browser-local. Retained scripts/recipes and dependency
+  lock data are private ordinary Files, not chat attachments; they may contain
+  sensitive source. No environment-variable dump is recorded.
+- New input references are checked against live host grants on every call.
+  Warm reuse checks metadata/grants and local input hashes, not inherited
+  provider-byte integrity. Cold restore and retry verify actual provider bytes.
+  Legacy version-one saved input copies remain independent saved owner data.
 - Captured stdout/stderr are returned as bounded Tool text to the assistant;
   printing sensitive content can disclose it even when files remain private.

@@ -7,6 +7,9 @@ Use Python 3.11 or newer and the committed lockfile:
 
 ```sh
 uv sync --locked
+npm ci --ignore-scripts
+npm run check
+npm run build
 uv run ruff format --check src scripts tests
 uv run ruff check src scripts tests
 uv run basedpyright
@@ -14,6 +17,21 @@ uv run python scripts/build_tool.py --check
 uv run pytest -q -m 'not integration'
 uv run pytest -q -m integration
 ```
+
+The browser worker smoke requires Chromium:
+
+```sh
+npm exec playwright-core -- install chromium
+npm test
+```
+
+An existing Chromium executable can be selected with the test-only
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` environment variable. CI installs Chromium
+with its system dependencies in a separate job. The smoke runs the real public
+Pyodide API and production wrapper in a module worker, without Open WebUI. It
+checks 256 MiB transient scratch, shared Python/shell files, jq/text/file commands,
+retained deltas, fresh-worker restores, shell errors and link rejection. This is
+browser-library evidence, not native Open WebUI acceptance.
 
 Unit checks do not require an Open WebUI installation. Integration fixtures use
 temporary **disk** SQLite and an isolated PostgreSQL database selected by
@@ -64,7 +82,8 @@ security invariants, not private implementation details.
 There are no quotas on test line counts, file counts or test-to-source diff
 ratios. Focused test-only pull requests are welcome. No coverage percentage gate.
 
-CI applies formatting, lint, strict types, deterministic build, unit tests and
+CI builds the browser asset and applies formatting, lint, strict types, deterministic
+Python build, unit tests and
 integration tests in that order. Linux CI limits unit execution to 30 seconds and
 integration execution to 5 minutes. A passing CI run does not establish browser
 or provider compatibility.

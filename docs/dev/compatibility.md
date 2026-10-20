@@ -29,30 +29,28 @@ Checks fail closed on concrete missing/incompatible contracts. They cannot prove
 that an unknown implementation preserves every permission or frontend semantic.
 Do not bypass a failed check by changing a version label or modifying host code.
 
-## Evidence scope
+## Qualification scope
 
-Current `0.1.0a2` observations below apply only to generated artifact SHA256
-`a522503432ebdd06ed013b873b692a41275c0cfa0d0674838d695b9ce520059d`
-and its corresponding source. Earlier `0.1.0a2` drafts are not qualified by these
-results.
+Version `0.2.0a1` introduces the browser shell and version-two manifests. Earlier
+release observations do not qualify this new artifact. Portable automated checks
+use real disk SQLite/PostgreSQL and synthetic external host boundaries. A real
+Chromium module-worker smoke exercises the production wrapper and public Pyodide
+APIs, including 256 MiB transient scratch and fresh-worker retained restoration.
+Neither check substitutes for native Tool/model execution or shared UI downloads.
 
-| Artifact / environment | Evidence | Not established |
-| --- | --- | --- |
-| Current `0.1.0a2`, portable Python 3.11–3.15 | Automated checks with synthetic external host/callback boundaries and real disk SQLite/PostgreSQL | Actual host Python support or browser/provider acceptance |
-| Current `0.1.0a2` single-file Tool loaded by actual upstream 0.12.0/0.12.2/0.12.3 native loader, Python 3.11/3.12, fresh disk SQLite/PostgreSQL, local provider | Generated Tool initialization/Valve schema, capability/permission contracts, 3 MiB binary storage/restoration, real-trigger atomic publication rollback and content/output preservation, zero-Python retry, owner/shared/foreign/private-checkpoint access; synthetic external execution callback | A running pristine host, stock UI/browser execution, remote providers or every later version |
-| Prior `0.1.0a1`, maintainer-modified Open WebUI 0.12.2, PostgreSQL, local storage | Scoped live stock-browser DOCX/XLSX/PDF generation, owner/shared inline downloads, fresh-browser recovery, private/foreign denial, grant revocation, fault/retry/concurrency and lifecycle/interruption checks | Pristine upstream deployment, all providers/topologies, or the current build |
-| Current `0.1.0a2`, maintainer-modified Open WebUI 0.12.2, PostgreSQL, local storage | Native settings save/reload and source-update preservation; ordinary-owner 3 MiB binary generation, owner/shared inline downloads with exact bytes/names, fresh-browser private workspace and original-binary recovery, new checksum output, private/foreign denial and existing Tool/data preservation | Pristine upstream deployment, other providers/topologies, full-capacity/transport-boundary testing or replay of the prior full stress matrix |
-| Corresponding current modular source, PostgreSQL/local storage, genuine served-worker callbacks where execution occurs | Five direct checks: malformed callback path, invalid action, worker file-size limit, stale/winner CAS, isolated non-Pyodide engine recovery/execute guard; saved status/retry use zero callbacks | Another native model/Socket.IO or Tool-grant test, or a full fault/interruption matrix |
+Native stock-host acceptance of this version must separately verify installed
+artifact identity, ordinary owner/model execution, configured storage, fresh-browser
+recovery, shared inline downloads, private-file denial and grant revocation.
+No remote S3/GCS/Azure provider qualification or general browser-memory capacity
+promise is made. The advertised minimum is a requirement, not a multiversion
+frontend compatibility matrix.
 
-The current stock-browser transfer used explicit 4 MiB/file, 7 MiB/workspace and
-14 MiB/envelope Valves. The native UI exposed the 8/8/15 MiB defaults and described
-fields, accepted integer-form strings and retained saved values after reload and
-same-source update. A 3 MiB binary and fresh-browser recovery do not establish
-full 8 MiB capacity or the 16 MiB transport boundary. Prior-artifact stress results
-were not replayed wholesale for this build.
+The version-sensitive `execute:python` event is checked against upstream source;
+it is not documented as a stable public extension API. The integration requires
+no upstream frontend changes but must be requalified when that contract changes.
+The filesystem/bootstrap uses documented public Pyodide Python/JS APIs and the
+public npm `just-bash/browser` export.
 
 Portable Tool/build Python support is separate from the host's Python range.
-The examined upstream Open WebUI releases declare Python 3.11/3.12; this project
-does not override their requirement. No S3/GCS/Azure browser qualification is
-claimed. Contract tests, source comparison and build success are not stock UI
-sharing or browser-worker proof.
+This project does not override Open WebUI's own Python requirements. Checks fail
+closed on missing contracts; do not bypass them by changing a version label.

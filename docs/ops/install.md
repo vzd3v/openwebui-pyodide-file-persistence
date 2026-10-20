@@ -6,7 +6,7 @@ Pre-release procedure; check the [artifact-specific matrix](../dev/compatibility
 
 - Open WebUI with the [required contracts](../dev/compatibility.md), native function
   calling, Pyodide engine and a connected browser for new execution.
-- Build with Python 3.11 or newer. The Open WebUI host supplies Pydantic 2/SQLAlchemy 2;
+- Build with Python 3.11+ and Node.js 22+. The Open WebUI host supplies Pydantic 2/SQLAlchemy 2;
   do not install this repository's development environment into it.
 - Existing PostgreSQL or local disk SQLite database, with permission to create
   the Tool's namespaced tables. Replicas must share that database; separate
@@ -18,8 +18,9 @@ Pre-release procedure; check the [artifact-specific matrix](../dev/compatibility
 1. Back up the host DB and file storage normally. Keep browser persistence enabled
    and existing browser files intact.
 2. Clone this repository and check out the revision you intend to test. Run
-   `python3 scripts/build_tool.py --check` in the checkout, outside Open WebUI.
-   This standard-library-only build writes `dist/openwebui_pyodide_file_saver.py`
+   `npm ci --ignore-scripts`, `npm run build`, then
+   `python3 scripts/build_tool.py --check` outside Open WebUI.
+   The deterministic build embeds the shell library into `dist/openwebui_pyodide_file_saver.py`
    and prints its SHA256. It does not install or import Open WebUI.
 3. Under **Workspace → Tools**, create a Tool, paste the complete generated
    `dist/openwebui_pyodide_file_saver.py`, assign a unique name and save.
@@ -42,9 +43,9 @@ by dropping data.
 
 | Valve | Default |
 | --- | --- |
-| `max_files` | 64 regular files |
+| `max_files` | 64 retained regular files; separately 64 referenced inputs |
 | `max_file_bytes` | 8 MiB decoded bytes per file |
-| `max_total_bytes` | 8 MiB decoded workspace, including restored inputs |
+| `max_total_bytes` | 8 MiB decoded retained files, excluding scratch and native inputs |
 | `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
 | `max_text_bytes` | 16 KiB per stdout/stderr stream |
 | `callback_timeout_seconds` | 55 seconds |
@@ -54,7 +55,8 @@ restrictions may lower the effective limits. These defaults are not a blanket
 provider qualification or capacity promise. Valves enforce serialized bounds below
 the host's 16 MiB callback ceiling and a deadline below its 60-second worker timeout.
 File count and captured-text caps are conservative policy, not a host capacity
-claim. Limits apply to the whole managed workspace, not only newly issued files.
+claim. Limits apply to retained files, not only newly issued files. Scratch under work/
+is independent of these limits and uses browser memory.
 
 Configure **global Tool Valves** through the native Tool editor/settings UI as an
 owner, write-granted editor or administrator (subject to host policy). These are
@@ -62,7 +64,8 @@ not ordinary chat-user `UserValves`; changes affect everyone using that Tool.
 Every field describes its units. Updating source does not overwrite previously
 saved explicit Valve values: review and intentionally change those values if
 larger limits are wanted. Decoded limits do not bypass serialized JSON/base64
-limits or the host's upload policy; there is no chunked transfer.
+limits or the host's upload policy. Cold restoration sends files sequentially in
+bounded callbacks; individual files are not chunked.
 Native settings may submit integer values as decimal strings; only the global
 Valves configuration boundary normalizes these to integers. Fractions, exponent
 notation, booleans, unknown fields and out-of-range values remain invalid.
@@ -77,4 +80,7 @@ Do not clear browser data, change persistence settings or drop the tables as par
 of rollback. Existing links use ordinary host routes independent of Tool loading;
 access still depends on the Files, provider bytes and Open WebUI permissions.
 Reinstall the same compatible version to resume from acknowledged checkpoints.
-Other schema versions are rejected, not automatically migrated.
+Other database schema versions are rejected. Version-one checkpoints remain
+readable by the new Tool; old Tool versions cannot read newly acknowledged
+version-two manifests. Rollback preserves all existing files but may require
+keeping the new Tool available for recovery of its own operations.

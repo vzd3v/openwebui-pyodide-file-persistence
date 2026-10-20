@@ -8,7 +8,17 @@ import hashlib
 import tomllib
 from pathlib import Path
 
-MODULES = ("contracts", "workspace_state", "browser_execution", "openwebui_adapter", "tool")
+MODULES = (
+    "contracts",
+    "workspace_state",
+    "browser_execution",
+    "browser_asset",
+    "browser_workspace",
+    "workspace_manifest",
+    "openwebui_adapter",
+    "workspace_execution",
+    "tool",
+)
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 HEADER = f'''"""
@@ -16,7 +26,7 @@ title: Pyodide File Saver
 author: vzd3v
 version: {VERSION}
 license: MIT
-description: Durable browser Python workspaces and shared-chat file download links.
+description: Browser Python and Bash workspaces with durable files and shared-chat links.
 required_open_webui_version: 0.12.0
 """
 from __future__ import annotations
@@ -29,6 +39,13 @@ def build() -> str:
     bodies: list[str] = []
     for module in MODULES:
         source = (ROOT / "src" / "pyodide_file_saver" / f"{module}.py").read_text()
+        if module == "browser_asset":
+            asset = ROOT / "build" / "browser-shell.js"
+            if not asset.is_file():
+                raise ValueError("Build browser dependency first: npm ci && npm run build")
+            source = source.replace(
+                '_EMBEDDED_SHELL = ""', "_EMBEDDED_SHELL = " + repr(asset.read_text())
+            )
         lines = source.splitlines(keepends=True)
         tree = ast.parse(source)
         removed: set[int] = set()
