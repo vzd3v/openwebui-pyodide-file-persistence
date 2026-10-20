@@ -15,6 +15,7 @@ from .contracts import (
     JSON_VALUE,
     Action,
     BoundContext,
+    BrowserFailure,
     FileBytes,
     FileSlot,
     Limits,
@@ -56,8 +57,31 @@ async def browser_call(
     }
     if len(json_text(payload).encode()) > limits.max_envelope_bytes:
         raise SaverError("Serialized native request exceeds transport limit")
-    async with asyncio.timeout(limits.callback_timeout_seconds):
-        return await event_call(payload), nonce
+    phase = str(config.get("phase", "execute"))
+    try:
+        async with asyncio.timeout(limits.callback_timeout_seconds):
+            raw = await event_call(payload)
+    except TimeoutError as error:
+        raise BrowserFailure(
+            "Browser callback timed out; worker termination is not confirmed",
+            "browser_callback_timeout",
+            phase,
+        ) from error
+    # Native callers may return a dict subclass with a reason attribute. Read it
+    # before JSON normalization, but expose only known content-free reason codes.
+    reason = getattr(raw, "reason", None)
+    reasons = {"session_unavailable", "session_mismatch", "session_disconnected"}
+    if isinstance(reason, str) and reason in reasons:
+        raise BrowserFailure("Browser session is unavailable", reason, phase)
+    parsed = JSON_VALUE.validate_python(raw)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), str):
+        code = parsed.get("error_code") if isinstance(parsed, dict) else None
+        if not isinstance(code, str) or code not in {"runtime_error", "python_exception"}:
+            code = "missing_response"
+        raise BrowserFailure(
+            "Browser returned no workspace response", "browser_" + str(code), phase
+        )
+    return parsed, nonce
 
 
 async def verify_manifest(
@@ -206,14 +230,26 @@ async def execute_workspace(
                 raise SaverError("Changed bytes differ from retained manifest")
             uploads[item.path] = file.data
             blobs.append(
-                FileSlot(path=item.path, file_id=str(uuid4()), sha256=item.sha256, size=item.size)
+                FileSlot(
+                    path=item.path,
+                    file_id=str(uuid4()),
+                    sha256=item.sha256,
+                    size=item.size,
+                    representation="empty" if item.size == 0 else "provider",
+                )
             )
         elif item.path in inherited_by_path and slot_entry(inherited_by_path[item.path]) == item:
             blobs.append(inherited_by_path[item.path])
         elif item.path in old_bytes and old_bytes[item.path].manifest() == item:
             uploads[item.path] = old_bytes[item.path].data
             blobs.append(
-                FileSlot(path=item.path, file_id=str(uuid4()), sha256=item.sha256, size=item.size)
+                FileSlot(
+                    path=item.path,
+                    file_id=str(uuid4()),
+                    sha256=item.sha256,
+                    size=item.size,
+                    representation="empty" if item.size == 0 else "provider",
+                )
             )
         else:
             raise SaverError("Retained manifest contains bytes not supplied or acknowledged")
@@ -243,6 +279,7 @@ async def execute_workspace(
         saved.checkpoint_version, saved.blobs, saved.inputs = 2, blobs, inputs
         saved.legacy_paths, saved.files, saved.language = legacy, manifests, call.language
         saved.execution_completed, saved.python_ok = True, reply.outcome == "ok"
+        saved.browser_warm = prepared.warm
         saved.exit_code = reply.exit_code
         saved.stdout, saved.stderr = reply.stdout, reply.stderr
         saved.stdout_truncated, saved.stderr_truncated = (

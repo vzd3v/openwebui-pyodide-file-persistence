@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -153,7 +154,9 @@ class WorkspaceState:
             ):
                 raise SaverError("Incompatible existing Tool indexes")
 
-    async def allocate(self, context: BoundContext) -> tuple[Receipt, Receipt | None]:
+    async def allocate(
+        self, context: BoundContext, language: Literal["python", "bash"] = "python"
+    ) -> tuple[Receipt, Receipt | None]:
         operation_id = str(uuid4())
         async with self.transaction() as session:
             constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
@@ -210,6 +213,8 @@ class WorkspaceState:
                 chat_id=context.chat_id,
                 message_id=context.message_id,
                 base_revision=int(row["revision"]),
+                base_operation_id=head.operation_id if head else None,
+                language=language,
                 checkpoint=FileSlot(
                     path="checkpoint.json", file_id=str(uuid4()), sha256="", size=0
                 ),

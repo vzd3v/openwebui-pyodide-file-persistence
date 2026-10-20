@@ -40,8 +40,10 @@ for qualification of a new build or environment.
   60-second frontend timeout. Backend timeout does not confirm worker death.
 - Remote provider `get_file` can materialize a whole object before bounded
   local reads; no unverified remote resource-bound promise is made.
-- Host/provider empty-upload policy still applies: a zero-byte issued file may
-  prevent a complete checkpoint, never produce a false link.
+- Exact empty retained files use receipt-backed native text Files with local
+  storage only. Remote/unknown providers reject new empty Files before insertion;
+  see the [native lifecycle contract](docs/dev/compatibility.md). Missing provider
+  bytes never become an empty-file fallback or a false download link.
 - Checkpoints are owner/admin-visible ordinary private Files, not a hidden
   vault. Deletion applies. No pruning/GC; failed provider attempts can leave
   unacknowledged objects.
@@ -58,3 +60,18 @@ for qualification of a new build or environment.
   Legacy version-one saved input copies remain independent saved owner data.
 - Captured stdout/stderr are returned as bounded Tool text to the assistant;
   printing sensitive content can disclose it even when files remain private.
+
+## Dependency advisory scope
+
+The distributed browser bundle does not include Undici's Node networking code;
+network commands are disabled. The installed maintainer dependency graph still
+includes `guarded-fetch`'s pinned Undici version with
+[Node networking advisories](https://github.com/advisories/GHSA-w293-vg96-wgc3).
+The esbuild [Windows development-server advisory](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr)
+concerns a build dependency; this project uses its build API without a server.
+The browser does include `sprintf-js`, which has an
+[unpatched precision advisory](https://github.com/advisories/GHSA-hp3w-g68c-fv3c).
+The pinned shell bounds precision and returns formatting failures as command
+errors; subsequent commands remain usable in synthetic regression probes. These
+scope observations do not establish absence of other vulnerable paths. Reassess
+dependency advisories when changing commands, networking or build dependencies.

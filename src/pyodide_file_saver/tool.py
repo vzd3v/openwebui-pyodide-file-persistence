@@ -12,9 +12,11 @@ from .browser_execution import read_checkpoint
 from .contracts import (
     Action,
     BoundContext,
+    BrowserFailure,
     Limits,
     Receipt,
     SaverError,
+    download_url,
     json_text,
     markdown_link,
     safe_filename,
@@ -35,10 +37,47 @@ def receipt_summary(receipt: Receipt) -> dict[str, JsonValue]:
         "execution_completed": receipt.execution_completed,
         "python_ok": receipt.python_ok,
         "language": receipt.language,
-        "exit_code": receipt.exit_code,
+        "browser_workspace": {
+            "mode": "unknown"
+            if receipt.browser_warm is None
+            else "warm"
+            if receipt.browser_warm
+            else "restored"
+            if receipt.base_operation_id
+            else "new",
+            "base_operation_id": receipt.base_operation_id,
+            "base_revision": receipt.base_revision,
+        },
+        "exit_code": receipt.exit_code if receipt.execution_completed else None,
+        "execution_outcome": ("ok" if receipt.python_ok else "error")
+        if receipt.execution_completed
+        else "unknown",
         "stdout_truncated": receipt.stdout_truncated,
         "stderr_truncated": receipt.stderr_truncated,
     }
+
+
+def receipt_diagnostics(receipt: Receipt) -> dict[str, JsonValue]:
+    """Accepted output is evidence of execution, never of successful persistence."""
+    result: dict[str, JsonValue] = {}
+    if receipt.execution_completed:
+        result.update(
+            stdout=receipt.stdout,
+            stderr=receipt.stderr,
+            execution_outcome="ok" if receipt.python_ok else "error",
+            exit_code=receipt.exit_code,
+            stdout_truncated=receipt.stdout_truncated,
+            stderr_truncated=receipt.stderr_truncated,
+        )
+    if not receipt.checkpoint.committed:
+        result["workspace_context"] = (
+            "The last acknowledged workspace head remains selected. "
+            "A subsequent execution can select a new browser root from it; "
+            "scratch and unacknowledged retained changes are not restored. "
+            "The old browser root may still exist; no deletion or worker "
+            "termination is confirmed. Inspect it before starting a new execution."
+        )
+    return result
 
 
 async def resume_publication(
@@ -85,8 +124,7 @@ async def resume_publication(
 
 def final_result(receipt: Receipt) -> dict[str, JsonValue]:
     result = receipt_summary(receipt)
-    result["stdout"] = receipt.stdout
-    result["stderr"] = receipt.stderr
+    result.update(receipt_diagnostics(receipt))
     if receipt.state == "conflict":
         result["incomplete"] = True
         result["recovery"] = (
@@ -103,8 +141,13 @@ def final_result(receipt: Receipt) -> dict[str, JsonValue]:
         links: list[JsonValue] = [
             {
                 "name": safe_filename(slot.path),
-                "markdown": markdown_link(safe_filename(slot.path), slot.file_id),
-                "download_url": f"/api/v1/files/{slot.file_id}/content?attachment=true",
+                "relative_path": slot.path,
+                "size": slot.size,
+                "sha256": slot.sha256,
+                "markdown": markdown_link(
+                    safe_filename(slot.path), slot.file_id, slot.representation
+                ),
+                "download_url": download_url(slot.file_id, slot.representation),
                 "attachment_url": f"/api/v1/files/{slot.file_id}",
             }
             for slot in receipt.outputs
@@ -174,11 +217,20 @@ class Tools:
         filesystem paths, attachment cards or instructions to open Controls.
         Ordinary Python errors and nonzero Bash exits save retained files privately.
         Bash provides jq, rg, find, head, tail, sed, awk and ordinary file commands;
-        use Python for Pyodide packages. Full logs remain transient under work/;
+        use Python for Pyodide packages. Every call has a fresh Python namespace
+        or shell environment; import names again or run a saved script. Warm workers
+        can retain installed packages, but a fresh browser does not reinstall them.
+        Static Python imports provide host package-loading hints; dynamic import
+        probes do not. Native subprocesses, threads and network shell commands are
+        unavailable. Full logs remain transient under work/;
         returned text is bounded with truncation flags and an exit code.
+        Empty retained files require native local storage; remote providers do not
+        support the native metadata-backed empty File lifecycle.
         Use action='retry' with a returned operation_id and no code to finish a
         saved publication without rerunning code. Use action='status' and no
-        code to find recent operations after a lost response. Status reports past
+        code to find recent operations after a lost response. Supply operation_id
+        to recover its accepted bounded stdout/stderr, including after storage
+        failure. Status reports past
         acknowledgements, not current byte/grant availability; retry revalidates
         without rerunning code before returning links. A new 'execute' always
         runs a new program: never use it as an automatic retry.
@@ -221,7 +273,13 @@ class Tools:
                 )
                 return json_text(
                     {
-                        "operations": [receipt_summary(item) for item in receipts],
+                        "operations": [
+                            {
+                                **receipt_summary(item),
+                                **(receipt_diagnostics(item) if call.operation_id else {}),
+                            }
+                            for item in receipts
+                        ],
                         "availability": "not_rechecked",
                         "instructions": (
                             "Receipts record past acknowledgements, not current availability. "
@@ -238,7 +296,7 @@ class Tools:
                 if __event_call__ is None:
                     raise SaverError("A connected browser session is required for execution")
                 blocked_modules = await adapter.execution_policy()
-                receipt, head = await adapter.state.allocate(context)
+                receipt, head = await adapter.state.allocate(context, call.language)
                 current_operation = receipt.operation_id
                 receipt = await execute_workspace(
                     adapter,
@@ -289,15 +347,8 @@ class Tools:
             )
             return json_text(result)
         except Exception as error:
-            if isinstance(error, (SaverError, TimeoutError)):
-                detail = (
-                    str(error)
-                    if isinstance(error, SaverError)
-                    else (
-                        "Browser callback timed out. Worker termination is not confirmed; "
-                        "previous acknowledged workspace is preserved."
-                    )
-                )
+            if isinstance(error, SaverError):
+                detail = str(error)
             elif isinstance(error, ValidationError):
                 detail = "Invalid invocation, configuration or saved data"
             else:
@@ -311,11 +362,15 @@ class Tools:
                     "operation, without code."
                 ),
             }
+            if isinstance(error, SaverError) and error.error_code:
+                result["error_code"] = error.error_code
+            if isinstance(error, BrowserFailure):
+                result["phase"] = error.phase
             if adapter and context and current_operation:
                 try:
-                    result["receipt"] = receipt_summary(
-                        await adapter.state.get(context, current_operation)
-                    )
+                    receipt = await adapter.state.get(context, current_operation)
+                    result["receipt"] = receipt_summary(receipt)
+                    result.update(receipt_diagnostics(receipt))
                 except Exception:
                     result["receipt_unavailable"] = True
             # No exception repr/traceback: DB/provider errors can contain payloads or secrets.
@@ -325,6 +380,12 @@ class Tools:
                         "component": "execution",
                         "operation": current_operation,
                         "error_type": type(error).__name__,
+                        **(
+                            {"error_code": error.error_code}
+                            if isinstance(error, SaverError) and error.error_code
+                            else {}
+                        ),
+                        **({"phase": error.phase} if isinstance(error, BrowserFailure) else {}),
                     }
                 )
             )

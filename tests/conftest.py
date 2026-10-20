@@ -333,7 +333,7 @@ class HostHarness:
             },
             "open_webui.models.users": {"Users": SimpleNamespace(get_user_by_id=self.user)},
             "open_webui.models.config": {"Config": SimpleNamespace(get=self.get_config)},
-            "open_webui.storage.provider": {"Storage": self.provider},
+            "open_webui.storage.provider": {"Storage": self.provider, "STORAGE_PROVIDER": "local"},
             "open_webui.config": {"CODE_INTERPRETER_BLOCKED_MODULES": []},
             "open_webui.utils.access_control.files": {"has_access_to_file": self.file_access},
         }

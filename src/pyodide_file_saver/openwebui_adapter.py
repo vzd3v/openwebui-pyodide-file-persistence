@@ -16,7 +16,7 @@ from uuid import uuid4
 from pydantic import JsonValue
 from sqlalchemy import JSON, Connection, Integer, MetaData, String, Table, select, update
 from sqlalchemy import inspect as inspect_sqlalchemy
-from sqlalchemy.engine import CursorResult
+from sqlalchemy.engine import CursorResult, RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .contracts import (
@@ -368,6 +368,8 @@ class OpenWebUIAdapter:
                     )
                 ):
                     raise SaverError("File is not readable by this actor")
+            if await self._empty_file(session, row):
+                return b""
             path = require_string(row["path"])
         try:
             provider_path = require_string(await asyncio.to_thread(self.storage.get_file, path))
@@ -399,7 +401,60 @@ class OpenWebUIAdapter:
                     )
                 ):
                     raise SaverError("File is not readable by this actor")
-            return require_string(row["filename"]), require_string(row["path"])
+            path = "" if await self._empty_file(session, row) else require_string(row["path"])
+            return require_string(row["filename"]), path
+
+    async def _empty_file(self, session: AsyncSession, row: RowMapping) -> bool:
+        """Recognize only an integration-created, receipt-backed exact empty File.
+
+        Missing provider objects must never fall through to native text fallback.
+        Native file ACLs are checked by the caller before reaching this method.
+        """
+        meta = json_object(row["meta"] or {})
+        if meta.get("pyodide_file_saver_representation") != "empty":
+            return False
+        operation_id = require_string(meta.get("pyodide_file_saver_operation"))
+        source = (
+            (
+                await session.execute(
+                    select(self.state.operation).where(
+                        self.state.operation.c.operation_id == operation_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if source is None:
+            raise SaverError("Empty File origin receipt is unavailable")
+        origin = await self.state.load(
+            session,
+            operation_id,
+            BoundContext(
+                require_string(source["actor_id"]),
+                require_string(source["chat_id"]),
+                require_string(source["message_id"]),
+            ),
+        )
+        expected_hash = digest(b"")
+        if (
+            row["path"] != ""
+            or row["user_id"] != origin.actor_id
+            or row["hash"] != expected_hash
+            or meta.get("size") != 0
+            or meta.get("file_hash") != expected_hash
+            or json_object(row["data"]).get("content") != ""
+            or not any(
+                slot.file_id == row["id"]
+                and slot.committed
+                and slot.representation == "empty"
+                and slot.size == 0
+                and slot.sha256 == expected_hash
+                for slot in [*origin.blobs, *origin.outputs]
+            )
+        ):
+            raise SaverError("Empty File differs from its acknowledged representation")
+        return True
 
     async def referenced_inputs(
         self,
@@ -425,7 +480,7 @@ class OpenWebUIAdapter:
             seen.add(file_id)
             if len(file_id) > 128 or not all(char.isalnum() or char in "-_" for char in file_id):
                 raise SaverError("Unsupported attached File identifier")
-            name, _ = await self.authorize_file(context, file_id)
+            name, provider_path = await self.authorize_file(context, file_id)
             # Skip this Tool's own issued attachments only after independent receipt proof.
             async with self.state.sessions() as session:
                 raw = await session.scalar(
@@ -455,6 +510,7 @@ class OpenWebUIAdapter:
                         sha256=digest(data),
                         size=len(data),
                         committed=True,
+                        representation="empty" if provider_path == "" else "provider",
                     )
                 )
         if len(result) > limits.max_files:
@@ -508,15 +564,30 @@ class OpenWebUIAdapter:
         # A fresh object name for EVERY attempt is essential: concurrent retries
         # must never overwrite an object elected by another retry's File commit.
         object_name = f"{uuid4()}_{name}"
-        stored, provider_path = await asyncio.to_thread(
-            self.storage.upload_file,
-            io.BytesIO(data),
-            object_name,
-            {"OpenWebUI-User-Id": context.actor_id, "OpenWebUI-File-Id": slot.file_id},
-        )
-        if stored != data or not provider_path:
-            raise SaverError("Storage provider did not confirm the intended bytes")
-        provider_path = require_string(provider_path)
+        empty = not data and path is not None
+        provider_path = ""
+        if (
+            empty
+            and getattr(
+                importlib.import_module("open_webui.storage.provider"), "STORAGE_PROVIDER", None
+            )
+            != "local"
+        ):
+            raise SaverError(
+                "Empty retained files require native local storage; remote or unknown "
+                "providers cannot safely delete metadata-backed empty Files",
+                "empty_files_require_local_storage",
+            )
+        if not empty:
+            stored, provider_path = await asyncio.to_thread(
+                self.storage.upload_file,
+                io.BytesIO(data),
+                object_name,
+                {"OpenWebUI-User-Id": context.actor_id, "OpenWebUI-File-Id": slot.file_id},
+            )
+            if stored != data or not provider_path:
+                raise SaverError("Storage provider did not confirm the intended bytes")
+            provider_path = require_string(provider_path)
         async with self.state.transaction() as session:
             receipt = await self.state.load(session, operation_id, context, lock=True)
             elected = self.slot(receipt, path)
@@ -534,22 +605,25 @@ class OpenWebUIAdapter:
                         hash=elected.sha256,
                         filename=name,
                         path=provider_path,
-                        data={},
+                        data={"content": ""} if empty else {},
                         meta={
                             "name": name,
                             "content_type": content_type,
                             "size": elected.size,
                             "file_hash": elected.sha256,
                             "pyodide_file_saver_operation": operation_id,
+                            **({"pyodide_file_saver_representation": "empty"} if empty else {}),
                         },
                         created_at=now,
                         updated_at=now,
                     )
                 )
                 elected.committed = True
+                elected.representation = "empty" if empty else "provider"
                 for output in receipt.outputs:
                     if output.file_id == elected.file_id:
                         output.committed = True
+                        output.representation = elected.representation
                 if path is None:
                     if receipt.checkpoint_version == 2 and not all(
                         blob.committed for blob in receipt.blobs

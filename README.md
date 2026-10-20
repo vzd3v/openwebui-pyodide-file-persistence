@@ -64,6 +64,8 @@ Scratch capacity depends on the browser and Pyodide memory. Retained-file and
 transport limits are independent of scratch size. Python variables and installed
 packages are not restored automatically; private recipes record the submitted
 source, runtime and available dependency lock. There is no automatic file pruning.
+Empty retained files require native local storage; creation is rejected on remote
+or unknown providers because their native empty-File deletion is incompatible.
 
 Read the [user guide](docs/user/guide.md), [security boundaries](SECURITY.md),
 [architecture](docs/dev/architecture.md), [testing](docs/dev/testing.md) and

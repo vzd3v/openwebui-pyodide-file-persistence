@@ -22,6 +22,19 @@ SCHEMA_VERSION = 1
 class SaverError(Exception):
     """Safe, content-free failure suitable for a Tool result."""
 
+    def __init__(self, message: str, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class BrowserFailure(SaverError):
+    """Classified callback failure without copying host or browser error text."""
+
+    def __init__(self, message: str, error_code: str, phase: str):
+        super().__init__(message)
+        self.error_code = error_code
+        self.phase = phase
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
@@ -119,6 +132,13 @@ class FileSlot(StrictModel):
     sha256: str
     size: int = Field(ge=0)
     committed: bool = False
+    representation: Literal["provider", "empty"] = "provider"
+
+    @model_validator(mode="after")
+    def validate_representation(self) -> FileSlot:
+        if self.representation == "empty" and (self.size != 0 or self.sha256 != digest(b"")):
+            raise ValueError("Empty File representation requires exact empty bytes")
+        return self
 
 
 class Receipt(StrictModel):
@@ -128,6 +148,8 @@ class Receipt(StrictModel):
     chat_id: str
     message_id: str
     base_revision: int
+    base_operation_id: str | None = None
+    browser_warm: bool | None = None
     state: Literal["allocated", "saved", "accepted", "conflict", "published"] = "allocated"
     checkpoint: FileSlot
     files: list[ManifestEntry] = Field(default_factory=list)
@@ -256,6 +278,13 @@ def issued_paths(current: list[ManifestEntry], baseline: list[ManifestEntry]) ->
     }
 
 
-def markdown_link(name: str, file_id: str) -> str:
+def download_url(file_id: str, representation: str = "provider") -> str:
+    # A fixed nonreserved component avoids the earlier native /content/html route.
+    # The native File row supplies the actual attachment name, not this component.
+    suffix = "/download" if representation == "empty" else ""
+    return f"/api/v1/files/{file_id}/content{suffix}?attachment=true"
+
+
+def markdown_link(name: str, file_id: str, representation: str = "provider") -> str:
     label = re.sub(r"([\\`*_{}\[\]()<>!|])", r"\\\1", name)
-    return f"[{label}](/api/v1/files/{file_id}/content?attachment=true)"
+    return f"[{label}]({download_url(file_id, representation)})"

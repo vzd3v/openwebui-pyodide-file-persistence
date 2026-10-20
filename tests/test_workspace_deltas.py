@@ -99,6 +99,11 @@ def test_changed_only_blobs_reused_for_publication_and_retry(
                 DeltaBrowser([private, FileBytes("outputs/result.txt", b"one")])
             )
             assert first.get("state") == "published", first
+            assert first["browser_workspace"] == {
+                "mode": "new",
+                "base_operation_id": None,
+                "base_revision": 0,
+            }
             adapter = OpenWebUIAdapter()
             receipt = await adapter.state.get(host.context, op(first))
             assert receipt.checkpoint_version == 2
@@ -110,6 +115,11 @@ def test_changed_only_blobs_reused_for_publication_and_retry(
                 DeltaBrowser([private, FileBytes("outputs/result.txt", b"two")], warm=True)
             )
             assert second.get("state") == "published", second
+            assert second["browser_workspace"] == {
+                "mode": "warm",
+                "base_operation_id": op(first),
+                "base_revision": 1,
+            }
             saved = await adapter.state.get(host.context, op(second))
             assert len(host.provider.uploads) == 5  # Changed output and small manifest only.
             assert saved.blobs[
@@ -126,6 +136,13 @@ def test_changed_only_blobs_reused_for_publication_and_retry(
             assert b'"data":' not in data and b"private.bin" in data
             retried = await host.call(action="retry", operation_id=op(second))
             assert retried.get("state") == "published" and len(host.provider.uploads) == 5
+            assert retried["browser_workspace"] == second["browser_workspace"]
+            cold = await host.call(DeltaBrowser([private, FileBytes("outputs/result.txt", b"two")]))
+            assert cold["browser_workspace"] == {
+                "mode": "restored",
+                "base_operation_id": op(second),
+                "base_revision": 2,
+            }
 
     asyncio.run(scenario())
 
@@ -186,6 +203,11 @@ def test_failed_delta_never_issues_or_advances_incomplete_head(
                 )
             else:
                 assert receipt.state == "allocated" and not receipt.checkpoint.committed
+            if fault == "provider":
+                assert failed["stdout"] == "synthetic output"
+                assert failed["stderr"] == ""
+                assert failed["execution_outcome"] == "ok" and failed["exit_code"] == 0
+                assert "new browser root" in str(failed["workspace_context"])
             async with host.engine.connect() as connection:
                 assert list(await connection.scalars(select(host.chat_files.c.file_id))) == []
 

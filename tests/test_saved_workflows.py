@@ -435,16 +435,33 @@ def test_unreceived_interrupted_work_never_replaces_acknowledged_head(
     asyncio.run(scenario())
 
 
-def test_empty_issued_file_rejection_does_not_acknowledge_partial_checkpoint(
+def test_empty_retained_files_use_receipt_backed_native_text_files(
     database_case: DatabaseCase, host_factory: HostFactory
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
-            result = await host.call(BrowserReply([FileBytes("outputs/empty.txt", b"")]))
-            assert result["incomplete"] is True
+            files = [FileBytes("outputs/empty report.txt", b""), FileBytes("scripts/empty.py", b"")]
+            result = await host.call(BrowserReply(files))
+            assert result["state"] == "published", result
             adapter = OpenWebUIAdapter()
             receipt = await adapter.state.get(host.context, operation(result))
-            assert not receipt.checkpoint.committed and not receipt.outputs[0].committed
-            assert len(await host.file_ids()) == 0
+            assert receipt.checkpoint.committed and all(slot.committed for slot in receipt.blobs)
+            assert all(slot.representation == "empty" for slot in receipt.blobs)
+            assert len(host.provider.uploads) == 1  # Only the nonempty manifest.
+            issued = result["issued_files"]
+            assert isinstance(issued, list) and len(issued) == 1
+            assert isinstance(issued[0], dict)
+            assert str(issued[0]["download_url"]).endswith("/content/download?attachment=true")
+            for slot in receipt.blobs:
+                assert await adapter.verify_slot(host.context, slot, 8) == b""
+            fresh = BrowserReply(files)
+            assert (await host.call(fresh))["state"] == "published"
+            assert fresh.restored == [files] or sorted(
+                fresh.restored[0], key=lambda f: f.path
+            ) == sorted(files, key=lambda f: f.path)
+            assert len(host.provider.uploads) == 2  # Unchanged empties reused.
+            assert (await host.call(action="retry", operation_id=operation(result)))[
+                "state"
+            ] == "published"
 
     asyncio.run(scenario())

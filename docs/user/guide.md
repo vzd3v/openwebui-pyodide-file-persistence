@@ -8,6 +8,12 @@ the document or analysis you need. See [installation](../ops/install.md).
 
 `execute_code` accepts `language="python"` or `"bash"`. Each call starts with a
 fresh Python namespace or shell environment; filesystem changes are shared.
+Import names again in each call or execute a retained script. An installed package
+can remain available in a warm worker even though its Python variables do not.
+Static imports provide Open WebUI package-loading hints before execution;
+`importlib.import_module()` and `find_spec()` probes do not request that preload.
+Use explicit imports or supported Pyodide/micropip installation where appropriate.
+Native subprocesses and OS threads are unavailable in this browser runtime.
 The default `cwd="work"` is relative to the workspace root. `cwd="."` selects
 the root; other values select an existing workspace-relative directory. Absolute
 paths and `..` components are not accepted as the `cwd` parameter.
@@ -80,6 +86,14 @@ inspection/rerunning of the saved source. They do not restore Python variables,
 install dependencies automatically, or guarantee reproducibility of external data.
 Full stdout/stderr logs remain transient in `work/`; the Tool returns bounded text
 with explicit truncation flags and the command exit code.
+Once a valid execution result is accepted, a later storage failure still returns
+its bounded stdout/stderr and actual exit status. This does not acknowledge a
+saved workspace or issue download links. Before a valid execution result arrives,
+the exit status and outcome are unknown, including after a callback timeout.
+`browser_workspace` reports whether a valid execution used a warm root, restored
+the named acknowledged base operation, or started a new workspace. Early failures
+and older receipts report `unknown`. This records execution context, not worker
+termination or continued scratch availability after the response.
 
 The assistant must include returned Markdown download links verbatim. Links use
 normal authenticated Open WebUI file routes. Shared recipients must sign in and
@@ -94,16 +108,34 @@ When a call fails:
   and finish publication without executing the source again.
 - `action="status"` and no code list historical receipts. Availability is not
   rechecked until retry; deleted bytes or revoked grants can invalidate old links.
+  Supplying a specific `operation_id` also returns its accepted bounded stdout/stderr
+  and actual execution outcome, including after a lost storage-failure response.
+  The recent-operation list omits streams. Status never issues download links.
 - A conflict keeps the losing checkpoint private and leaves the acknowledged
   head unchanged. No automatic branch selection occurs.
 - A failure before a complete manifest is committed is unacknowledged. Retry
   cannot rerun the code or recover missing transfer bytes. The last acknowledged
   head remains selected; browser-local pending files may still exist.
+  A following execution can select a new browser root restored from that head,
+  so neither scratch nor unacknowledged retained changes are guaranteed to be
+  visible there. The previous browser root is not automatically deleted. Inspect
+  pending work before choosing a new execution; retry never reruns its source.
 
 Timeout does not prove worker termination. Do not automatically repeat a new
 execution after a lost response. Browser closure/reload can lose scratch and
-unacknowledged changes. Host empty-upload policy still applies. No automatic
+unacknowledged changes. Empty retained files are supported with native **local**
+storage as receipt-backed native text Files containing exactly zero bytes. Their
+links use the native filename-qualified download route; native authentication,
+sharing and deletion still apply. No provider upload or placeholder bytes are used.
+S3, GCS, Azure and unknown providers reject new empty retained files explicitly:
+their native deletion path cannot safely clean up this representation. Existing
+receipt-backed empty Files remain readable after a storage configuration change.
+Unmarked native files with missing provider bytes never become empty files.
+No automatic
 pruning, deletion or resurrection of saved Files is performed.
+Callback failures include a content-free `error_code` and `phase` when available;
+raw host/provider error text is not returned. Issued file records also include
+the retained relative path, byte size and SHA-256 alongside the download link.
 
 Version-one saved files retain their original exact paths and bytes when read
 into the new format, including old saved input copies. If an old regular file is

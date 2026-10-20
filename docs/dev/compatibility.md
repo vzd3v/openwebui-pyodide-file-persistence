@@ -24,6 +24,13 @@ The current installer minimum is Open WebUI 0.12.0.
   require a currently enabled execution engine or browser.
 - The stock transfer/deadline contract: serialized payloads below 16 MiB and
   callback wait below 60 seconds. Provider upload limits can be lower.
+- Empty retained files additionally require configured native `STORAGE_PROVIDER=local`
+  and the native filename-qualified content route. The explicit representation is
+  `path=""`, `data.content=""`, an integration marker and a committed origin receipt
+  slot with exact zero size/SHA-256. Provider bytes are never replaced by fallback
+  text for nonempty files. Native S3/GCS/Azure deletion cannot safely handle this
+  representation, so new empty Files are rejected there and for unknown providers.
+  This check does not prevent reads of previously saved empty Files.
 
 Checks fail closed on concrete missing/incompatible contracts. They cannot prove
 that an unknown implementation preserves every permission or frontend semantic.
@@ -53,6 +60,10 @@ The version-sensitive `execute:python` event is checked against upstream source;
 it is not documented as a stable public extension API. Requalify when that
 contract changes. The filesystem/bootstrap uses documented public Pyodide APIs
 and the public npm `just-bash/browser` export.
+The metadata-backed empty download and local deletion behavior are checked against
+official [0.12.0 file routes](https://github.com/open-webui/open-webui/blob/v0.12.0/backend/open_webui/routers/files.py)
+and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.12.2/backend/open_webui/storage/provider.py).
+These source checks do not establish runtime acceptance for every supported host.
 
 Portable Tool/build Python support is separate from the host's Python range.
 This project does not override Open WebUI's own Python requirements.

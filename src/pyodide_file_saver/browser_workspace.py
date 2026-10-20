@@ -9,6 +9,7 @@ from pydantic import Field, JsonValue
 from .browser_execution import import_hints
 from .contracts import (
     JSON_VALUE,
+    BrowserFailure,
     Limits,
     ManifestEntry,
     SaverError,
@@ -315,7 +316,11 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
     if value.version != 2 or value.operation_id != operation_id or value.nonce != nonce:
         raise SaverError("Workspace callback binding is invalid")
     if value.outcome not in {"ok", "execution_error"}:
-        raise SaverError(
-            value.stderr if value.outcome == "busy" else "Browser retained snapshot failed"
+        raise BrowserFailure(
+            "Browser workspace is busy"
+            if value.outcome == "busy"
+            else "Browser retained snapshot failed",
+            "browser_busy" if value.outcome == "busy" else "browser_snapshot_failed",
+            value.phase if value.phase in {"prepare", "restore", "execute"} else "unknown",
         )
     return value
