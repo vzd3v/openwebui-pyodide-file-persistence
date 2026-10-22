@@ -61,6 +61,14 @@ for qualification of a new build or environment.
 - Captured stdout/stderr are returned as bounded Tool text to the assistant;
   printing sensitive content can disclose it even when files remain private.
 
+The optional [package delivery utility](docs/ops/pyodide-packages.md) runs only as
+an explicit administrator command. Its output root must be operator-owned and
+separate from original assets. Only its published package directory is intended
+for web access; archives, cache, inventories and logs remain private. Live lock
+SHA256 values authorize package bytes, not the safety of arbitrary package code.
+Published generations are immutable; preparation failures preserve the previous
+pointer. This does not create an executor or change host authentication policy.
+
 ## Dependency advisory scope
 
 The distributed browser bundle does not include Undici's Node networking code;

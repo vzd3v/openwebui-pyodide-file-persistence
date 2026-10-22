@@ -96,3 +96,9 @@ The adapter checks concrete APIs, call signatures, ORM metadata and actual schem
 before creating state. PostgreSQL coordinates replicas sharing one database;
 SQLite requires local disk locking. Separate per-replica databases and network-file
 SQLite are unsupported. See [compatibility](compatibility.md) for qualification.
+
+The optional [package delivery utility](../ops/pyodide-packages.md) is separate
+from the Tool build and browser protocol. It inventories existing runtime assets,
+audits same-origin delivery and prepares only missing lock-verified package files
+for an administrator's existing ingress. It introduces no Tool dependency,
+application patch, execution service or package installation callback.
