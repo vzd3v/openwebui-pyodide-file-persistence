@@ -38,6 +38,14 @@ Do not bypass a failed check by changing a version label or modifying host code.
 
 ## Saved-data compatibility
 
+Version `0.2.0a3` starts every Tool call at the workspace root and removes the
+model-facing `cwd` argument. Saved files and receipts keep their existing paths
+and bytes; no data migration is needed. To rerun an earlier program that expects
+another directory, enter its recorded `cwd` inside the program before executing
+the saved source. Historical run records remain evidence of their original
+execution directory. Changing directory inside one call does not carry over to
+the next call.
+
 Version `0.2.0a2` reads earlier receipts and version-one checkpoints. This is a
 forward upgrade path, not a reversible binary swap: strict older `0.2.0a1` readers
 reject the new receipt fields and FileSlot representation, including for nonempty
@@ -48,7 +56,12 @@ rewrite coordination data or saved Files to force a downgrade.
 
 ## Qualification scope
 
-### Current artifact: 0.2.0a2
+### Current artifact: 0.2.0a3
+
+The fixed-root entrypoint requires fresh qualification. The older artifact's
+native acceptance below does not qualify this build.
+
+### Historical artifact: 0.2.0a2
 
 The following observations apply to generated artifact SHA256
 `207e92d57f9ab69bf97cc9c79527b989523ae3b86c3fbfb5d8d79d53605c05bd`.

@@ -11,7 +11,7 @@ before enabling it on an instance.
 ## How it works
 
 The agent uses one `execute_code` Tool with `language="python"` or `"bash"`.
-Python runs in Pyodide; shell commands run through the open-source
+Every call starts at the same workspace root. Python runs in Pyodide; shell commands run through the open-source
 [just-bash](https://github.com/vercel-labs/just-bash) browser library. Both use
 one filesystem, with no execution server or per-user server process.
 
