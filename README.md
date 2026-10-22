@@ -50,6 +50,11 @@ it for a test chat/model using native function calling and the Pyodide engine.
 Keep existing browser persistence enabled. Follow the
 [installation guide](docs/ops/install.md) and test with synthetic files first.
 
+If package loading fails because the host returns 404 for Pyodide assets, the
+optional [package delivery utility](docs/ops/pyodide-packages.md) audits the actual
+served files and prepares a hash-verified additive mirror. This is an administrator
+deployment step; it does not install packages automatically or change the Tool.
+
 Ask for a document normally. The assistant writes issued files under `outputs/`
 and includes the Tool's supplied Markdown download links in its answer.
 

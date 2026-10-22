@@ -106,3 +106,14 @@ Synthetic external-host and callback fixtures are not live Open WebUI
 or browser proof. See the [qualification matrix](compatibility.md) for actual
 upstream contract tests versus prior-artifact browser observations. A new build
 does not inherit the old artifact's browser acceptance.
+
+## Optional package delivery utility
+
+`uv run pytest -q tests/test_pyodide_packages.py` runs the standalone operator's
+public CLI against synthetic source directories, real compressed archives,
+loopback HTTP servers and an external Docker-command fixture. It covers 404/hash/
+HTTP failure classification, actual fallback delivery, redirects, immutable
+publication/repair, verified-cache reuse, source changes and unsafe paths/links.
+These tests run in the existing unit CI matrix; no Docker daemon, upstream download
+or Open WebUI instance is required. They establish deployment-utility behavior,
+not native Tool/browser acceptance or arbitrary package import compatibility.

@@ -83,3 +83,16 @@ access still depends on the Files, provider bytes and Open WebUI permissions.
 Reinstall a compatible version to resume from acknowledged checkpoints. Preserve
 the version needed to recover its operations; do not force a downgrade by editing
 receipts or deleting data. Other database schema versions are rejected.
+
+## Host Tool Search and Python packages
+
+With Open WebUI Tool Search enabled, add `execute_code` to its always-loaded
+functions (`chat.tool_search.always_loaded`) so the model receives the Tool's
+schema directly. Preserve other configured entries, access grants and Tool
+selection. This uses normal host configuration and keeps Tool Search available
+for other functions; it does not enable the builtin Code Interpreter.
+
+The Tool uses the host's Pyodide package delivery. For missing asset responses,
+follow the optional [package audit and mirror guide](pyodide-packages.md). This
+deployment utility is independent of Tool installation and does not restore Python
+variables or installed packages in a new browser.
