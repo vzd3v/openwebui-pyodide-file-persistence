@@ -126,6 +126,7 @@ class BrowserReply:
     def __init__(self, files: list[FileBytes], outcome: str = "ok") -> None:
         self.files, self.outcome = files, outcome
         self.calls = 0
+        self.configs: list[dict[str, JsonValue]] = []
         self.restored: list[list[FileBytes]] = []
         self.restore_batches: list[FileBytes] = []
         self.entered = asyncio.Event()
@@ -151,6 +152,7 @@ class BrowserReply:
                 assert isinstance(parsed, dict)
                 config = parsed
         assert config is not None and isinstance(config["restore"], list)
+        self.configs.append(config)
         if config.get("phase") == "prepare":
             return {
                 "result": json_text(

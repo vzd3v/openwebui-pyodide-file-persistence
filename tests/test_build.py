@@ -1,6 +1,7 @@
 """The distributed single file must load independently of the source package."""
 
 import asyncio
+import inspect
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,7 @@ def test_bundled_tool_loads_and_exposes_concrete_valve_schema(
     tool = cast(type[Tools], module.Tools)()
     assert tool.valves.max_files == 64
     assert "max_total_bytes" in tool.Valves.model_json_schema()["properties"]
+    assert "cwd" not in inspect.signature(tool.execute_code).parameters
     # Match native settings POST strings, then its persisted integer JSON.
     settings = {
         "max_files": "64",
@@ -175,6 +177,8 @@ def test_generated_tool_initializes_publishes_and_restores(
             browser = BrowserReply(files)
             result = await host.call(browser, tool=tool)
             assert result["state"] == "published" and browser.calls == 1
+            executions = [config for config in browser.configs if config["phase"] == "execute"]
+            assert executions and all(config["cwd"] == "." for config in executions)
             operation_id = result["operation_id"]
             assert isinstance(operation_id, str)
             adapter = adapter_type()

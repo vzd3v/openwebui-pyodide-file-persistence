@@ -14,9 +14,10 @@ Static imports provide Open WebUI package-loading hints before execution;
 `importlib.import_module()` and `find_spec()` probes do not request that preload.
 Use explicit imports or supported Pyodide/micropip installation where appropriate.
 Native subprocesses and OS threads are unavailable in this browser runtime.
-The default `cwd="work"` is relative to the workspace root. `cwd="."` selects
-the root; other values select an existing workspace-relative directory. Absolute
-paths and `..` components are not accepted as the `cwd` parameter.
+Every call starts at the workspace root. Use paths such as `work/data.json`,
+`scripts/analyze.py` and `outputs/report.csv` consistently in Python and Bash.
+The Tool does not expose a working-directory argument. A program may change its
+own directory, but that change does not affect the next call's starting directory.
 
 - `work/` is transient scratch. A warm browser reuses it; a fresh worker does not.
 - `scripts/` is retained privately. Store reusable programs here.
@@ -27,9 +28,9 @@ paths and `..` components are not accepted as the `cwd` parameter.
   including calls that do not reattach the input. Deleted/revoked inputs fail
   explicitly. Copy an input into scratch before editing it.
 
-Inside `work/`, managed `inputs`, `scripts` and `outputs` convenience links point
+For programs that explicitly enter `work/`, managed `inputs`, `scripts` and `outputs` links point
 to their root directories. Ordinary reads/writes such as `outputs/report.csv`
-work from the default cwd. Tools that do not follow directory links, such as
+work there. Tools that do not follow directory links, such as
 `find`, should use `../scripts` or an explicit link-following option. Do not
 replace these managed links. User-created links are excluded from retained
 snapshots, even if their targets stay inside the workspace.

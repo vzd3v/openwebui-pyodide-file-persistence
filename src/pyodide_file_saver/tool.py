@@ -196,7 +196,6 @@ class Tools:
         action: str = "execute",
         operation_id: str = "",
         language: str = "python",
-        cwd: str = "work",
         __user__: dict[str, JsonValue] | None = None,
         __chat_id__: str | None = None,
         __message_id__: str | None = None,
@@ -208,7 +207,8 @@ class Tools:
     ) -> str:
         """Run Python or Bash in the user's browser with durable retained files.
 
-        Default cwd is work/, transient scratch shared by Python and Bash. Write files
+        Every call starts at the workspace root, shared by Python and Bash. Use
+        work/ for transient scratch. Write files
         issued to the user under outputs/; scripts/ holds private retained source and recipes.
         Scratch work/ is not saved. Inputs are restored as inputs/<file-id>/<name>.
         Print calculations you want returned. Successful execution automatically
@@ -239,7 +239,6 @@ class Tools:
         :param action: execute, retry or status.
         :param operation_id: Server-issued saved operation ID for retry or specific status.
         :param language: python or bash (browser just-bash; no native OS processes).
-        :param cwd: Workspace-relative directory, default work; dot selects workspace root.
         """
         current_operation = ""
         adapter: OpenWebUIAdapter | None = None
@@ -251,7 +250,7 @@ class Tools:
                     "action": action,
                     "operation_id": operation_id,
                     "language": language,
-                    "cwd": cwd,
+                    "cwd": ".",
                 }
             )
             # Cached Tool instances carry configuration, never actor/workspace state.

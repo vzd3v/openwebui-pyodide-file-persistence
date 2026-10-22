@@ -197,6 +197,25 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       "from pathlib import Path\nassert not Path('scratch.bin').exists()\nassert Path('outputs/result.txt').read_text()=='BETA\\n'\nprint('cold restored')",
     );
     assert.equal(cold.outcome, "ok", cold.stderr);
+    const rootPython = await execute(
+      "from pathlib import Path\nimport os\nPath('work/fmt_results.json').write_text('{\"value\":42}')\nos.chdir('work')",
+      "python",
+      { cwd: "." },
+    );
+    assert.equal(rootPython.outcome, "ok", rootPython.stderr);
+    const rootBash = await execute(
+      "test -d work && test -d scripts && jq .value work/fmt_results.json; cd work",
+      "bash",
+      { cwd: "." },
+    );
+    assert.equal(rootBash.outcome, "ok", rootBash.stderr);
+    assert.equal(rootBash.stdout.trim(), "42");
+    const rootAgain = await execute(
+      "from pathlib import Path\nimport json\nassert json.loads(Path('work/fmt_results.json').read_text())['value']==42\nassert Path('outputs/result.txt').read_text()=='BETA\\n'",
+      "python",
+      { cwd: "." },
+    );
+    assert.equal(rootAgain.outcome, "ok", rootAgain.stderr);
     const deletedCwd = await execute(
       "import shutil\nshutil.rmtree('/home/pyodide', ignore_errors=True)\nprint('cwd removed')",
     );
