@@ -63,11 +63,19 @@ The Tool keeps the latest submitted program and available dependency information
 in private run records. These help the assistant inspect and repeat a calculation;
 they do not install dependencies or reproduce external data automatically.
 
-## Spend context on the answer
+## Use fewer tokens on file operations
+
+The agent can use `rg` to search, `sed` to edit, `jq` to select JSON, and `cp` or
+`mv` to organize files. These commands work on the same files as Python. Editing
+a Markdown document does not need a new Python program for every change.
+
+The maintainer reports up to 10× fewer tokens on file-operation tasks with
+shell commands and saved programs, with less time spent generating and debugging
+Python boilerplate. Savings depend on the task and model; no benchmark has been
+published.
 
 Ask the assistant to keep large intermediate results in `work/`, save the useful
-result and return a short summary. It can search files with `rg`, select JSON with
-`jq`, and rerun a saved program instead of rewriting it.
+result and return a short summary. Rerun a saved program instead of rewriting it.
 
 File bytes saved by the Tool are separate from its text response. This can reduce
 unnecessary conversation text, but it does not prevent the model from seeing file
