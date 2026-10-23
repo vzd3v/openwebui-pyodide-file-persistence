@@ -1,9 +1,9 @@
-# Development and verification
+# Testing
 
-Set up the checkout as described in [CONTRIBUTING](../../CONTRIBUTING.md).
-Commands below use a POSIX shell. CI runs on Ubuntu with Python 3.11–3.15.
+Set up the checkout through [Contributing](../../CONTRIBUTING.md). Commands use a
+POSIX shell. CI runs on Ubuntu with Python 3.11–3.15.
 
-Use Python 3.11 or newer and the committed lockfile:
+## Local checks
 
 ```sh
 uv sync --locked
@@ -18,39 +18,23 @@ uv run pytest -q -m 'not integration'
 uv run pytest -q -m integration
 ```
 
-The browser worker smoke requires Chromium:
+Unit tests need no Open WebUI installation. Integration tests use temporary disk
+SQLite and, when `SAVER_TEST_DATABASE_URL` is set, a dedicated PostgreSQL database.
+Without that variable, PostgreSQL cases are skipped. A SQLite-only run is not a
+full integration run.
 
-```sh
-npm exec playwright-core -- install chromium
-npm test
-```
-
-An existing Chromium executable can be selected with the test-only
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` environment variable. CI installs Chromium
-with its system dependencies in a separate job. The smoke runs the real public
-Pyodide API and production wrapper in a module worker, without Open WebUI. It
-checks 256 MiB transient scratch, shared Python/shell files, jq/text/file commands,
-retained deltas, fresh-worker restores, shell errors and link rejection. This is
-browser-library evidence, not native Open WebUI acceptance.
-
-Unit checks do not require an Open WebUI installation. Integration fixtures use
-temporary **disk** SQLite and an isolated PostgreSQL database selected by
-`SAVER_TEST_DATABASE_URL`. Without that variable, PostgreSQL cases are **skipped**;
-passing SQLite alone is not a full integration run. CI supplies PostgreSQL 17.
-Create disposable PostgreSQL databases with UTF-8 encoding (for example,
-`createdb --template=template0 --encoding=UTF8 saver_test`); do not select a
-maintenance database whose SQL_ASCII encoding can fail before Tool code runs.
-Python 3.15 uses Psycopg's pure-Python implementation with system `libpq` because
-the pinned binary distribution has no 3.15 wheel. Install `libpq` through your
-platform package manager before running PostgreSQL tests on that interpreter.
+CI uses PostgreSQL 17. Databases need UTF-8 encoding; when creating one manually,
+use `createdb --template=template0 --encoding=UTF8 saver_test`. SQL_ASCII can fail
+before Tool code runs. Python 3.15 uses Psycopg's pure-Python implementation and
+needs system `libpq`, because the pinned binary distribution has no 3.15 wheel.
 
 ## Disposable PostgreSQL
 
-Never point tests at a deployed Open WebUI database. Fixtures create independent
-schemas and intentionally test DDL, corruption and concurrent committed writes.
-Use a database dedicated to these tests, with permission to create schemas.
+Never point tests at a deployed Open WebUI database. Fixtures create schemas and
+test DDL, corruption and concurrent writes. Use a disposable database with schema
+creation permission.
 
-For example, with Docker installed, create a disposable local instance:
+With Docker:
 
 ```sh
 docker run --detach --rm --name pyodide-file-saver-tests \
@@ -61,59 +45,74 @@ docker run --detach --rm --name pyodide-file-saver-tests \
 ```
 
 Wait until `docker exec pyodide-file-saver-tests pg_isready -U saver -d saver_test`
-reports that it accepts connections, then run:
+accepts connections, then run:
 
 ```sh
 export SAVER_TEST_DATABASE_URL=postgresql+psycopg://saver:synthetic-test-password@127.0.0.1:55432/saver_test
 uv run pytest -q -m integration
 ```
 
-The credentials above are synthetic local-test values, not deployment credentials.
-After testing, `docker stop pyodide-file-saver-tests` removes that disposable
-container and its test data. Do not reuse a container containing data you need.
+These are synthetic local-test credentials. Afterwards,
+`docker stop pyodide-file-saver-tests` removes the container and its test data.
+Do not reuse a container holding data you need.
 
-## Test boundaries and CI
+## Chromium worker
 
-Race/restart tests use multiple committed connections and separate processes.
-Do not mock internal modules or databases; replace only the external host/provider
-boundary. Add focused tests for observable behavior and critical persistence or
-security invariants, not private implementation details.
+```sh
+npm exec playwright-core -- install chromium
+npm test
+```
 
-There are no quotas on test line counts, file counts or test-to-source diff
-ratios. Focused test-only pull requests are welcome. No coverage percentage gate.
+Use `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to select an existing Chromium. CI installs
+Chromium and its system dependencies in a separate job.
 
-CI builds the browser asset and applies formatting, lint, strict types, deterministic
-Python build, unit tests and
-integration tests in that order. Linux CI limits unit execution to 30 seconds and
-integration execution to 5 minutes. A passing CI run does not establish browser
-or provider compatibility.
+This smoke test runs public Pyodide APIs and the production wrapper in a module
+worker without Open WebUI. It checks shared Python/shell files, 256 MiB scratch,
+32 MiB binary shell operations, text/JSON commands, retained deltas, fresh-worker
+restoration, shell errors and rejected links. It proves browser-library behavior,
+not native Open WebUI acceptance or available RAM on every device.
 
-## Browser qualification
+## What CI establishes
 
-Browser acceptance additionally requires the exact host/provider, real served
-Pyodide worker, DOCX/XLSX/PDF automatic saving, ordinary assistant inline-link
-clicks in original/shared stock UI, fresh-browser recovery, private/foreign
-denial, revocation and interruption cases. Callback simulation/build/source
-inspection is not that gate. Keep deployment evidence/identities/tokens/raw
-conversations out of commits and issue/PR reports. Publish only sanitized,
-synthetic reproduction steps and clearly scoped observations.
+CI runs formatting, lint, strict types, deterministic builds, unit and integration
+tests. Linux jobs cap unit execution at 30 seconds and integration at 5 minutes.
+The generated single-file Tool is exercised through initialization, publication
+and fresh restoration with a synthetic host and real SQLite/PostgreSQL.
 
-Automated transfer/boundary tests and real disk SQLite/PostgreSQL tests are
-present. CI also executes the generated single-file Tool through initialization,
-publication and fresh restoration against a synthetic external host with real
-disk SQLite/PostgreSQL. Loading its class/schema alone is not execution proof.
-Synthetic external-host and callback fixtures are not live Open WebUI
-or browser proof. See the [qualification matrix](compatibility.md) for actual
-upstream contract tests versus prior-artifact browser observations. A new build
-does not inherit the old artifact's browser acceptance.
+Race/restart tests use committed connections and separate processes. Replace only
+external host/provider boundaries; do not mock internal modules or databases.
+Test observable behavior and persistence/security invariants. There are no test
+line-count quotas or coverage-percentage gate; focused test-only PRs are welcome.
 
-## Optional package delivery utility
+## Native Open WebUI acceptance
 
-`uv run pytest -q tests/test_pyodide_packages.py` runs the standalone operator's
-public CLI against synthetic source directories, real compressed archives,
-loopback HTTP servers and an external Docker-command fixture. It covers 404/hash/
-HTTP failure classification, actual fallback delivery, redirects, immutable
-publication/repair, verified-cache reuse, source changes and unsafe paths/links.
-These tests run in the existing unit CI matrix; no Docker daemon, upstream download
-or Open WebUI instance is required. They establish deployment-utility behavior,
-not native Tool/browser acceptance or arbitrary package import compatibility.
+For a release or deployment, test the exact generated artifact, host version,
+browser and storage provider. Use the real served Pyodide worker and ordinary
+assistant calls. Include:
+
+- DOCX/XLSX/PDF generation, automatic saving and exact downloaded bytes.
+- Clickable links in assistant answers in original and shared stock UI.
+- Python/shell shared files, warm reuse and fresh-browser restoration/rerun.
+- Owner/recipient access, foreign/private denial and revocation.
+- Interruption, failure and recovery paths relevant to the deployment.
+
+Callback simulation, source inspection, loading a schema and passing CI do not
+replace these checks. A new build does not inherit an older artifact's acceptance.
+See [compatibility](compatibility.md) for the recorded scope.
+
+Keep deployment identities, tokens, raw chats and operational evidence out of the
+repository and public reports. Publish synthetic reproduction steps and clearly
+scoped observations.
+
+## Package utility tests
+
+```sh
+uv run pytest -q tests/test_pyodide_packages.py
+```
+
+These run the optional administrator CLI against synthetic directories, real
+compressed archives, loopback HTTP and an external Docker-command fixture. They
+cover failure classification, actual fallback delivery, redirects, publication,
+repair, cache reuse, source changes and unsafe paths/links. No Docker daemon,
+upstream download or Open WebUI instance is needed. They test delivery behavior,
+not arbitrary Python package compatibility.

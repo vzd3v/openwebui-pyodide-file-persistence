@@ -1,67 +1,68 @@
 # Contributing
 
-Bug reports, documentation fixes and focused code changes are welcome.
-The project is experimental; see [compatibility status](README.md) before
-testing against an Open WebUI instance.
+Documentation fixes, bug reports and focused code changes are welcome. The Tool
+is experimental; check [compatibility](docs/dev/compatibility.md) before testing
+against an Open WebUI instance.
 
-## Issues and proposals
+## Report a problem
 
-For a bug, include the project revision, Open WebUI and Python versions, database
-type, storage provider, a small synthetic reproduction and expected/actual behavior.
-Redact credentials, document contents and personal data from logs or screenshots.
-Use [SECURITY.md](SECURITY.md) for suspected vulnerabilities.
+Include the project revision, Open WebUI/Python versions, database type, storage
+provider, a small synthetic reproduction, and expected versus actual behavior.
+Remove credentials, personal data and document contents from logs/screenshots.
+For vulnerabilities, follow [Security](SECURITY.md).
 
-For a substantial API, schema or architecture change, open an issue to discuss
-the approach before implementing it. Small fixes can be submitted directly as
-pull requests.
+Discuss substantial API, schema or architecture changes in an issue first. Small
+fixes can go directly to a pull request.
 
-## Development
+## Set up a checkout
 
-Use Node.js 22+, Python 3.11+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-From a clone of the repository:
+Use Node.js 22+, Python 3.11+ and
+[uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```sh
+git clone https://github.com/vzd3v/openwebui-pyodide-file-persistence.git
+cd openwebui-pyodide-file-persistence
 uv sync --locked --python 3.12
 npm ci --ignore-scripts
 npm run build
+uv run python scripts/build_tool.py --check
 ```
 
-The environment is local to this checkout. Do not install it into an Open WebUI
-runtime. Keep `uv.lock` committed and update dependencies only as an intentional
-part of a change. See [verification](docs/dev/testing.md) for check commands,
-disposable PostgreSQL setup and the distinction between automated and browser tests.
+The generated Tool is `dist/openwebui_pyodide_file_saver.py`. The build prints its
+SHA-256 and requires no running Open WebUI instance. Keep development dependencies
+local to the checkout; do not install this environment into Open WebUI. Commit
+source and lockfiles, not generated `build/` or `dist/` files. Change dependencies
+only intentionally.
 
-## Pull requests
+Read [architecture](docs/dev/architecture.md) for the code map and persistence
+model, [Tool reference](docs/dev/tool-reference.md) for API behavior, and
+[testing](docs/dev/testing.md) for check commands and a disposable PostgreSQL setup.
 
-This project uses [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow):
+## Submit a pull request
 
-1. Create a short-lived branch from current `main`; use a fork if you do not have
-   write access. There is no long-lived `develop` branch.
-2. Make a focused change with descriptive commits. Include relevant tests and
-   documentation; do not mix unrelated cleanup into the same pull request.
+1. Create a short-lived branch from current `main`, using a fork if needed.
+2. Make a focused change with relevant tests and documentation. Keep unrelated
+   cleanup separate.
 3. Run the applicable checks and open a pull request targeting `main`.
-4. Explain the problem, the change, verification performed and any skipped checks
-   or compatibility limitations. Link a related issue when one exists.
-5. Address review feedback. A maintainer reviews and merges after CI passes;
-   delete the working branch after merge. Do not push changes directly to `main`.
+4. Describe the problem, resulting behavior, checks run and any skipped checks or
+   compatibility limits. Link the related issue when there is one.
+5. Address review feedback. A maintainer merges after CI passes; delete the branch
+   after merge. Do not push directly to `main` or bypass failing checks.
 
-CI runs on pull requests and on `main`. It builds the pinned browser dependency and checks formatting, lint, strict types,
-reproducible builds and tests on Python 3.11–3.15 with disk SQLite and PostgreSQL.
-This portable Tool matrix does not extend Open WebUI's own host Python range.
-Do not bypass failing checks or describe a skipped check as passing.
+CI checks formatting, lint, strict types, reproducible builds, Python 3.11–3.15
+with SQLite/PostgreSQL, and the Chromium worker. These tests do not qualify every
+Open WebUI host or storage provider. Report observed evidence at its actual scope.
 
-## Scope and safety
+## Preserve these boundaries
 
-- Keep documentation in English and examples synthetic. Never include real
-  credentials, conversations, document contents or deployment configuration.
-- Preserve browser persistence and acknowledged server files. Schema or recovery
-  changes need a non-destructive compatibility strategy.
-- Keep host integration in the adapter. Do not add server-side Python execution,
-  a parallel permission system or patches to Open WebUI.
-- Test behavior at public boundaries; do not replace internal modules or real
-  databases with mocks. Browser callback fixtures do not prove stock UI behavior.
-- Commit source, not generated `dist/` artifacts. Building the native Tool does
-  not require a running Open WebUI instance.
+- Use English documentation and synthetic examples. Never commit credentials,
+  private conversations, real documents or deployment-specific configuration.
+- Keep execution in the browser and host integration in the adapter. Do not add
+  an execution server, parallel permissions system or Open WebUI patch.
+- Preserve browser persistence and saved files. Schema/recovery changes need a
+  non-destructive compatibility strategy.
+- Test public behavior with real databases. Replace only external host/provider
+  boundaries; callback fixtures do not prove stock UI behavior.
 
-Integration code is [MIT](LICENSE). Bundled dependency licenses are described in
-[third-party notices](THIRD_PARTY_NOTICES.txt) and embedded in the generated Tool.
+Integration code is [MIT](LICENSE). Bundled dependency licenses appear in
+[third-party notices](THIRD_PARTY_NOTICES.txt) and the generated Tool.
