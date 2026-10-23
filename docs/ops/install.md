@@ -1,98 +1,112 @@
-# Installation and removal
+# Install the Tool
 
-Pre-release procedure; check the [artifact-specific matrix](../dev/compatibility.md).
+This guide is for an Open WebUI administrator. Installation adds one native Tool
+and two tables to the existing database. It does not require an execution server,
+frontend patch or separate database.
+
+The project is experimental. Check [compatibility](../dev/compatibility.md) and
+test with synthetic files before giving users access.
 
 ## Requirements
 
-- Open WebUI with the [required contracts](../dev/compatibility.md), native function
-  calling, Pyodide engine and a connected browser for new execution.
-- Build with Python 3.11+ and Node.js 22+. The Open WebUI host supplies Pydantic 2/SQLAlchemy 2;
-  do not install this repository's development environment into it.
-- Existing PostgreSQL or local disk SQLite database, with permission to create
-  the Tool's namespaced tables. Replicas must share that database; separate
-  per-replica databases and network-filesystem SQLite are not supported topologies.
-- Configured storage provider; qualification is scoped to the linked matrix.
+- Open WebUI with the required native Tool contracts, native function calling,
+  the Pyodide engine and a connected browser for new executions.
+- PostgreSQL or local-disk SQLite, with permission to create two tables. Replicas
+  must share the database. Separate per-replica databases and network-filesystem
+  SQLite are unsupported.
+- Configured file storage. Empty retained files require native local storage.
+  Other provider compatibility needs testing in your environment.
 
-## Steps
+The Open WebUI host supplies Pydantic 2 and SQLAlchemy 2. Do not install this
+repository's development environment into it. Building from source is optional;
+see [Contributing](../../CONTRIBUTING.md).
 
-1. Back up the host DB and file storage normally. Keep browser persistence enabled
-   and existing browser files intact.
-2. Clone this repository and check out the revision you intend to test. Run
-   `npm ci --ignore-scripts`, `npm run build`, then
-   `python3 scripts/build_tool.py --check` outside Open WebUI.
-   The deterministic build embeds the shell library into `dist/openwebui_pyodide_file_saver.py`
-   and prints its SHA256. It does not install or import Open WebUI.
-3. Under **Workspace → Tools**, create a Tool, paste the complete generated
-   `dist/openwebui_pyodide_file_saver.py`, assign a unique name and save.
-4. Grant access only to intended testers through normal host controls; enable
-   the Tool for the test model/chat. Select native function calling and Pyodide.
-   The custom `execute_code` replaces the builtin only in this native path.
-5. Leave browser persistence enabled and review the Tool's Valves below. No host
-   application patch, additional executor or separate database is required.
-6. Request a synthetic file. Verify actual assistant inline-link download,
-   exact bytes, fresh-browser workspace recovery, shared-recipient inline-link
-   download, private/foreign denial and revocation. Controls must not be needed.
+## Install and configure
 
-The first managed call creates and validates two tables in the existing host DB:
+1. Back up the database and file storage normally. Keep browser persistence
+   enabled and existing browser files intact.
+2. Download [`openwebui_pyodide_file_saver.py` from 0.2.0a3](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases/download/v0.2.0a3/openwebui_pyodide_file_saver.py).
+   Its SHA-256 is
+   `8b4e3063ff5ce19372b34535a664abb7e6b03fc69ea44195b2a2288138700958`.
+3. Under **Workspace → Tools**, create a Tool, paste the complete file and save.
+   When upgrading an existing registration, update it in place instead of leaving
+   duplicate `execute_code` Tools enabled.
+4. Grant access to intended testers through normal Open WebUI controls and select
+   the Tool for the test model/chat. Use **native function calling** and the
+   **Pyodide** execution engine. Disable the model's built-in Code Interpreter
+   capability so this Tool supplies `execute_code`.
+5. If Tool Search is enabled, open **Settings → Admin → Interface → Always
+   Loaded Tools** and add `execute_code`, preserving existing entries. This sets
+   `chat.tool_search.always_loaded` so the model receives the schema directly.
+   Tool Search can remain enabled for other functions; retain Tool selection and
+   access grants. See [the host setting](https://docs.openwebui.com/reference/env-configuration/#tool_search_always_loaded).
+6. Review the limits below, then run the acceptance checks.
+
+On the first managed call, the Tool creates and validates
 `pyodide_file_saver_workspace` and `pyodide_file_saver_operation`. It does not
-modify Open WebUI-owned table definitions or migrations. A missing host capability,
-incompatible schema or insufficient permission fails explicitly; it is not repaired
-by dropping data.
+change Open WebUI's own table definitions or migrations. Missing permissions or
+incompatible state produce an error; the Tool never drops data to repair them.
 
-## Default limits
+## Check your installation
+
+Use ordinary assistant calls and click links in the answer, not just attachment
+cards or Controls:
+
+1. Create a synthetic text file in `outputs/`. Download it and check the bytes.
+2. Run Python, then shell against the same file. Save a program in `scripts/`.
+3. Open a fresh authenticated browser session. Restore and rerun the saved program.
+   Check that retained files return and transient scratch does not.
+4. Share the chat with an authorized test recipient. Check their inline download.
+   Confirm a foreign user cannot download it; revoke access and check denial again.
+5. Try your actual result formats and storage provider. Check errors and recovery
+   before treating the installation as ready for users.
+
+See [testing](../dev/testing.md#native-open-webui-acceptance) for the full acceptance
+scope. Passing CI or loading the Tool's schema is not a substitute for these checks.
+
+## Limits
+
+Valves are global settings for everyone using this Tool. Change them through the
+native Tool editor/settings as an owner, write-granted editor or administrator,
+subject to host policy. They are not per-user `UserValves`.
 
 | Valve | Default |
 | --- | --- |
-| `max_files` | 64 retained regular files; separately 64 referenced inputs |
+| `max_files` | 64 retained regular files; a separate limit of 64 referenced inputs |
 | `max_file_bytes` | 8 MiB decoded bytes per file |
 | `max_total_bytes` | 8 MiB decoded retained files, excluding scratch and native inputs |
 | `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
 | `max_text_bytes` | 16 KiB per stdout/stderr stream |
 | `callback_timeout_seconds` | 55 seconds |
 
-Base64/JSON overhead counts toward the serialized limit. Host upload/provider
-restrictions may lower the effective limits. These defaults are not a blanket
-provider qualification or capacity promise. Valves enforce serialized bounds below
-the host's 16 MiB callback ceiling and a deadline below its 60-second worker timeout.
-File count and captured-text caps are conservative policy, not a host capacity
-claim. Limits apply to retained files, not only newly issued files. Scratch under work/
-is independent of these limits and uses browser memory.
+JSON/base64 overhead counts toward the serialized limit. Host upload/provider
+policies can lower effective limits. Decoded byte limits do not bypass them.
+These defaults stay below the host's 16 MiB callback ceiling and 60-second timeout;
+they are not a browser-memory or provider-capacity promise. Cold restoration sends
+files sequentially without chunking. Scratch uses browser memory separately.
 
-Configure **global Tool Valves** through the native Tool editor/settings UI as an
-owner, write-granted editor or administrator (subject to host policy). These are
-not ordinary chat-user `UserValves`; changes affect everyone using that Tool.
-Every field describes its units. Updating source does not overwrite previously
-saved explicit Valve values: review and intentionally change those values if
-larger limits are wanted. Decoded limits do not bypass serialized JSON/base64
-limits or the host's upload policy. Cold restoration sends files sequentially in
-bounded callbacks; individual files are not chunked.
-Native settings may submit integer values as decimal strings; only the global
-Valves configuration boundary normalizes these to integers. Fractions, exponent
-notation, booleans, unknown fields and out-of-range values remain invalid.
+Source updates do not replace explicitly saved Valve values. Review them when
+upgrading. The settings boundary accepts decimal integer strings from the native
+UI; fractions, exponent notation, booleans, unknown fields and out-of-range values
+are rejected. Each field's description states its units.
 
-## Remove / rollback
+## Missing Python packages
 
-To stop new executions, disable or deselect this Tool. You can remove the Tool
-through normal host controls without deleting saved Files or its tables. Before
-replacing its source, check [saved-data compatibility](../dev/compatibility.md#saved-data-compatibility);
-an older binary may reject receipts written by a newer version.
+The Tool uses your instance's Pyodide package delivery. If a supported package
+fails to load with an asset 404, use the optional
+[package audit and mirror utility](pyodide-packages.md). It is an administrator
+command, independent of Tool installation. It does not automatically install
+packages in browsers or restore them after a fresh start.
 
-Do not clear browser data, change persistence settings or drop the tables as part
-of rollback. Existing links use ordinary host routes independent of Tool loading;
-access still depends on the Files, provider bytes and Open WebUI permissions.
-Reinstall a compatible version to resume from acknowledged checkpoints. Preserve
-the version needed to recover its operations; do not force a downgrade by editing
-receipts or deleting data. Other database schema versions are rejected.
+## Stop or remove the Tool
 
-## Host Tool Search and Python packages
+Disable or deselect the Tool to stop new executions. Removing its registration
+through normal host controls does not require deleting saved Files or its tables.
+Existing links use normal host routes and still depend on Files, provider bytes
+and permissions.
 
-With Open WebUI Tool Search enabled, add `execute_code` to its always-loaded
-functions (`chat.tool_search.always_loaded`) so the model receives the Tool's
-schema directly. Preserve other configured entries, access grants and Tool
-selection. This uses normal host configuration and keeps Tool Search available
-for other functions; it does not enable the builtin Code Interpreter.
-
-The Tool uses the host's Pyodide package delivery. For missing asset responses,
-follow the optional [package audit and mirror guide](pyodide-packages.md). This
-deployment utility is independent of Tool installation and does not restore Python
-variables or installed packages in a new browser.
+Before replacing the source with an older version, read
+[saved-data compatibility](../dev/compatibility.md#saved-data-compatibility).
+Preserve the database, saved Files and a version that can read them. Do not clear
+browser data, change persistence settings, edit receipts or drop tables to force
+a downgrade. Reinstall a compatible version to resume acknowledged workspaces.

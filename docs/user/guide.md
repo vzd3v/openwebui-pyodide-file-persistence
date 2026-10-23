@@ -1,153 +1,109 @@
-# Using the browser workspace
+# Working with files
 
-Enable the Tool for a chat/model using native function calling and Pyodide.
-Normally the assistant chooses the execution language and handles saving; ask for
-the document or analysis you need. See [installation](../ops/install.md).
+Once an administrator [installs the Tool](../ops/install.md), enable it for your
+chat and ask for the result you need. You do not need to write code or choose a
+language. The assistant can use Python for calculations and shell commands for
+searching and editing files.
 
-## Paths and execution
+## Try these tasks
 
-`execute_code` accepts `language="python"` or `"bash"`. Each call starts with a
-fresh Python namespace or shell environment; filesystem changes are shared.
-Import names again in each call or execute a retained script. An installed package
-can remain available in a warm worker even though its Python variables do not.
-Static imports provide Open WebUI package-loading hints before execution;
-`importlib.import_module()` and `find_spec()` probes do not request that preload.
-Use explicit imports or supported Pyodide/micropip installation where appropriate.
-Native subprocesses and OS threads are unavailable in this browser runtime.
-Every call starts at the workspace root. Use paths such as `work/data.json`,
-`scripts/analyze.py` and `outputs/report.csv` consistently in Python and Bash.
-The Tool does not expose a working-directory argument. A program may change its
-own directory, but that change does not affect the next call's starting directory.
+**Compare data:**
 
-- `work/` is transient scratch. A warm browser reuses it; a fresh worker does not.
-- `scripts/` is retained privately. Store reusable programs here.
-- `outputs/` is intended for the user, including requested drafts. Successful
-  calls publish only newly created or byte-changed output files.
-- `inputs/<file-id>/<name>` contains referenced native attachments. Aliases remain
-  stable after an upload is renamed. Authorization is rechecked on every call,
-  including calls that do not reattach the input. Deleted/revoked inputs fail
-  explicitly. Copy an input into scratch before editing it.
+> Compare the two attached CSVs by customer ID. Save the differences as
+> `outputs/differences.xlsx`, return its download link, and keep the analysis
+> program under `scripts/` for next time.
 
-For programs that explicitly enter `work/`, managed `inputs`, `scripts` and `outputs` links point
-to their root directories. Ordinary reads/writes such as `outputs/report.csv`
-work there. Tools that do not follow directory links, such as
-`find`, should use `../scripts` or an explicit link-following option. Do not
-replace these managed links. User-created links are excluded from retained
-snapshots, even if their targets stay inside the workspace.
+**Edit documents:**
 
-For example, Python can prepare data:
+> Search these Markdown files for the old product name, replace it with the new
+> name, and give me links to the revised files. Summarize what changed.
 
-```python
-from pathlib import Path
-Path("scripts/data.json").write_text('{"values":[2,3,5]}')
-```
+**Reuse an analysis:**
 
-A following Bash call can use it immediately:
+> Use the saved program in `scripts/` on this new CSV. Install any dependencies
+> it needs, rerun it, and return the updated report.
 
-```sh
-jq -r '.values[]' scripts/data.json | awk '{sum += $1} END {print sum}' > outputs/sum.txt
-```
+Actual Python package availability depends on your instance. The assistant should
+report a missing package rather than pretend that a file was created.
 
-The same file is visible to a later Python call. Large intermediates can stay
-under `work/`; only retained files are hashed and considered for upload.
+## Download and share results
 
-## Shell capabilities
+The assistant should include a download link in its answer. Click that link to
+get the file; opening Controls should not be necessary. A filesystem path such
+as `outputs/report.xlsx` is not a download link.
 
-The pinned just-bash 3.6.0 browser library supplies shell syntax, pipelines,
-redirection, loops and a selected command set:
+Links use normal authenticated Open WebUI downloads. A recipient of a shared chat
+must sign in and have permission to access it. Sharing a result does not attach
+private programs or run records. Deleting a file or revoking access can make an
+old link stop working.
 
-- File operations: `cat`, `cp`, `mv`, `rm`, `mkdir`, `find`, `ls`, `stat`, `tree`,
-  `touch`, `readlink`, `chmod`, `du`, `mktemp`, `split`.
-- Text/JSON: `jq`, `rg`, `grep`, `sed`, `awk`, `sort`, `uniq`, `cut`, `head`, `tail`,
-  `wc`, `xargs`, `diff`, `tee`, checksums and common formatting utilities.
+If a result is missing its link, ask the assistant to check the saved operation
+and retry publication. It should use the existing operation ID, not automatically
+run the program again.
 
-These are JavaScript implementations, not GNU binaries. `jq` implements a
-compatible subset; arbitrary jq programs and every GNU option are not guaranteed.
-`rg` uses a JavaScript regex implementation. Native processes, hard links,
-`python`, `sqlite3`, `js-exec`, `tar`, `gzip`/`gunzip`, compressed search, `curl`
-and `wget` are unavailable. Use the Python language for Pyodide packages.
-Unsupported compression fails explicitly. Shell commands have a 45-second
-execution limit and a 16 MiB aggregate output limit; returned text has its separate
-Valve cap. Browser string/heredoc limits are 1 GiB, array limits 16 million
-entries. These are command guardrails, not guaranteed usable browser RAM.
+## Keep the files you need
 
-## Saving and recovery
+| Directory | What belongs here | Saved by the Tool? |
+| --- | --- | --- |
+| `inputs/` | Attachments you have permission to use | Referenced originals; access is checked on every call |
+| `work/` | Temporary data and full logs | No |
+| `scripts/` | Programs to keep and rerun | Yes, privately |
+| `outputs/` | Documents and results to download | Yes; new or changed files are linked after success |
 
-After an acknowledged save, a fresh authenticated browser can restore retained
-files. Only changed retained bytes are transferred/uploaded; immutable native File
-blobs are reused. Cold restoration sends bounded files sequentially. Individual
-files remain subject to transport/upload limits; no file chunking is provided.
+Python and shell see the same files. Each call starts at the workspace root, so
+`outputs/report.csv` means the same thing in both languages. Copy an input into
+`work/` before editing it.
 
-Private `scripts/.runs/latest/` files record exact submitted source, cwd, runtime,
-post-run installed package versions, exit status and `micropip.freeze()` dependency
-lock when micropip is installed. Otherwise the recipe explicitly marks the lock
-unavailable. The latest recipe remains in the current workspace; historical
-receipts retain their own immutable recipe blobs. These records support manual
-inspection/rerunning of the saved source. They do not restore Python variables,
-install dependencies automatically, or guarantee reproducibility of external data.
-Full stdout/stderr logs remain transient in `work/`; the Tool returns bounded text
-with explicit truncation flags and the command exit code.
-Once a valid execution result is accepted, a later storage failure still returns
-its bounded stdout/stderr and actual exit status. This does not acknowledge a
-saved workspace or issue download links. Before a valid execution result arrives,
-the exit status and outcome are unknown, including after a callback timeout.
-`browser_workspace` reports whether a valid execution used a warm root, restored
-the named acknowledged base operation, or started a new workspace. Early failures
-and older receipts report `unknown`. This records execution context, not worker
-termination or continued scratch availability after the response.
+A warm browser can reuse scratch files between calls. After a fresh-browser
+restore, only acknowledged saved files and authorized inputs return. Variables,
+temporary files and installed packages do not automatically return. Even in a warm
+browser, each call has a fresh Python namespace or shell environment.
 
-The assistant must include returned Markdown download links verbatim. Links use
-normal authenticated Open WebUI file routes. Shared recipients must sign in and
-have normal host access; anonymous downloads are not supported. Private source,
-recipes and checkpoint manifests are not attached to the chat.
+The Tool keeps the latest submitted program and available dependency information
+in private run records. These help the assistant inspect and repeat a calculation;
+they do not install dependencies or reproduce external data automatically.
 
-When a call fails:
+## Spend context on the answer
 
-- An ordinary Python error or nonzero shell exit saves retained files privately
-  if saving succeeds. Error-produced outputs are not published by unrelated success.
-- `action="retry"`, a saved `operation_id` and no code revalidate committed bytes
-  and finish publication without executing the source again.
-- `action="status"` and no code list historical receipts. Availability is not
-  rechecked until retry; deleted bytes or revoked grants can invalidate old links.
-  Supplying a specific `operation_id` also returns its accepted bounded stdout/stderr
-  and actual execution outcome, including after a lost storage-failure response.
-  The recent-operation list omits streams. Status never issues download links.
-- A conflict keeps the losing checkpoint private and leaves the acknowledged
-  head unchanged. No automatic branch selection occurs.
-- A failure before a complete manifest is committed is unacknowledged. Retry
-  cannot rerun the code or recover missing transfer bytes. The last acknowledged
-  head remains selected; browser-local pending files may still exist.
-  A following execution can select a new browser root restored from that head,
-  so neither scratch nor unacknowledged retained changes are guaranteed to be
-  visible there. The previous browser root is not automatically deleted. Inspect
-  pending work before choosing a new execution; retry never reruns its source.
+Ask the assistant to keep large intermediate results in `work/`, save the useful
+result and return a short summary. It can search files with `rg`, select JSON with
+`jq`, and rerun a saved program instead of rewriting it.
 
-Timeout does not prove worker termination. Do not automatically repeat a new
-execution after a lost response. Browser closure/reload can lose scratch and
-unacknowledged changes. Empty retained files are supported with native **local**
-storage as receipt-backed native text Files containing exactly zero bytes. Their
-links use the native filename-qualified download route; native authentication,
-sharing and deletion still apply. No provider upload or placeholder bytes are used.
-S3, GCS, Azure and unknown providers reject new empty retained files explicitly:
-their native deletion path cannot safely clean up this representation. Existing
-receipt-backed empty Files remain readable after a storage configuration change.
-Unmarked native files with missing provider bytes never become empty files.
-No automatic pruning, deletion or resurrection of saved Files is performed.
-Callback failures include a content-free `error_code` and `phase` when available;
-raw host/provider error text is not returned. Issued file records also include
-the retained relative path, byte size and SHA-256 alongside the download link.
+File bytes saved by the Tool are separate from its text response. This can reduce
+unnecessary conversation text, but it does not prevent the model from seeing file
+content through other tools, attachment processing or printed output.
 
-Version-one saved files retain their original exact paths and bytes when read
-into the new format, including old saved input copies. If an old regular file is
-named work, scripts or inputs at the root, execution stops with an explicit
-upgrade diagnostic; use the previous compatible Tool to rename/recover it. The
-old checkpoint and head are preserved. Private recipe directories avoid existing
-legacy file paths. That compatibility copy
-is independent of the original upload; new native input references use the live
-authorization rules above. Manual code blocks and unrelated browser files are
-not automatically imported. Keep existing browser persistence enabled.
+## When something fails
 
-Older saved data can be read by the new version; older binaries cannot read all
-new receipts. Preserve saved Files and coordination data when stopping or changing
-versions; see [saved-data compatibility](../dev/compatibility.md#saved-data-compatibility)
-before attempting a downgrade.
+- **The program reports an error:** saved files may still have been preserved
+  privately. Outputs from the failed call do not become chat downloads. Ask the
+  assistant to inspect the error and correct the program.
+- **The program finished but saving failed:** its accepted output and exit status
+  remain available, but a saved workspace is not confirmed. Retry the existing
+  operation if possible; do not assume the files were published.
+- **The response was lost or timed out:** first ask for operation status. A timeout
+  does not prove execution stopped. Automatically running it again can duplicate work.
+- **Two calls conflict:** the losing saved operation stays private. The Tool does
+  not choose a replacement automatically.
+- **A file exceeds the limit:** ask for a smaller result or talk to the administrator.
+  The defaults are 8 MiB per retained file and 8 MiB total; scratch is separate.
+
+Before reloading the browser or starting another execution after a failed save,
+inspect pending work. Unsaved changes and scratch may be lost or left in an older
+browser workspace. See the [Tool reference](../dev/tool-reference.md#failure-and-recovery)
+for exact recovery behavior.
+
+## Limits to expect
+
+Shell commands are browser implementations. Common file commands, `rg`, `jq`,
+`sed`, `awk` and pipelines are available; not every GNU option or jq expression
+is supported. Native programs, subprocesses, OS threads, network shell commands
+and compression commands are unavailable. Use Python for Pyodide packages.
+
+Browser memory limits scratch. Empty saved files require local storage; other
+storage providers reject their creation. There is no automatic pruning of saved
+files. Review results before sharing them, and use ordinary Open WebUI deletion
+and access controls when needed.
+
+For exact API fields, command limits, package loading and saved-data behavior,
+see the [Tool reference](../dev/tool-reference.md).

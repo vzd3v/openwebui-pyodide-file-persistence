@@ -1,104 +1,121 @@
 # Architecture
 
-One in-process native Tool coordinates browser execution with the existing host
-database and storage provider. Open WebUI owns identities, grants, Files,
-attachments and downloads. Browser bytes remain untrusted self-uploads.
+The Tool connects browser execution to Open WebUI's existing file storage and
+permissions. Python runs in Pyodide; shell commands use the same filesystem
+through just-bash. The server coordinates saving and downloads, not execution.
 
-| Module | Responsibility |
-| --- | --- |
-| `contracts.py` | Strict actions, limits, receipts and path validation |
-| `workspace_state.py` | Two namespaced tables, durable receipts and head CAS |
-| `browser_execution.py` | Version-one checkpoint compatibility and package hints |
-| `browser_workspace.py` | Public-Pyodide prepare/restore/execute protocol |
-| `browser_asset.py` | Embedded maintainer-built browser dependency |
-| `workspace_manifest.py` | Version-two immutable blob manifests |
-| `workspace_execution.py` | Authorization, bounded restores and delta commits |
-| `openwebui_adapter.py` | Version-sensitive host/storage/chat integration |
-| `browser/workspace-fs.ts` | just-bash filesystem adapter to the same Pyodide FS |
-| `tool.py` | Native entrypoint, status, retry and result presentation |
+Open WebUI owns users, chat access, Files and downloads. Browser results are
+untrusted uploads. See [Security](../../SECURITY.md) before changing a trust or
+persistence boundary and the [Tool reference](tool-reference.md) for observable
+behavior.
+
+## Execution and saving
+
+1. Bind the call to live actor/chat records and allocate a durable operation.
+2. Check the browser's cached workspace against the acknowledged operation. Reuse
+   it if warm; otherwise restore verified saved files sequentially.
+3. Execute the submitted source once. Python and shell read/write the same Pyodide
+   filesystem; there is no mirrored shell filesystem.
+4. Hash retained files. Transfer changed bytes and a complete manifest; do not
+   scan or encode scratch.
+5. Commit immutable file blobs, then the manifest. Select the workspace head with
+   a revision compare-and-set.
+6. After successful execution, publish new/changed outputs using their existing
+   blob File IDs. Scripts, run records and manifests stay private.
+
+A conflicting operation retains private bytes but cannot select the head or
+publish automatically. Retry verifies committed bytes and current grants without
+browser execution. Status reports historical acknowledgements, not current
+availability.
 
 ## Durable state
 
-Two SQLAlchemy Core tables use the host's existing database without changing host
-schemas or migrations: `pyodide_file_saver_workspace` records actor/chat revision
-and acknowledged operation; `pyodide_file_saver_operation` stores reserved File IDs,
-manifest metadata, states and bounded text. File payloads stay in configured host
-storage. Database schema version remains one; defaulted receipt fields add the
-version-two checkpoint format without deleting or rewriting old receipts.
+Two SQLAlchemy Core tables use the existing host database:
 
-Allocate an operation before browser work. Reserve new immutable blob IDs only
-for changed retained files; reuse acknowledged IDs for unchanged bytes. A version-two
-checkpoint is a small JSON manifest referencing these blobs and native input IDs.
-Commit every required blob before committing the manifest and selecting the head
-with revision CAS. No browser-supplied File ID becomes authority. A conflicting
-operation keeps its private bytes and cannot automatically publish.
+- `pyodide_file_saver_workspace`: actor/chat revision and acknowledged operation.
+- `pyodide_file_saver_operation`: reserved File IDs, manifest metadata, operation
+  states and bounded execution text.
 
-Provider I/O stays outside transactions. Every upload attempt gets a fresh object
-name; one File/receipt mapping is elected under a database lock. File insertion and
-its committed receipt marker are atomic. Losing attempts may leave orphan objects;
-no automatic garbage collection is claimed. A partial blob failure does not become
-an acknowledged checkpoint, and committed-but-deleted Files are never recreated.
+Payloads live in the configured file storage. Host-owned tables and migrations
+are unchanged. Database schema version remains one; defaulted receipt fields
+support version-two manifests while preserving older receipts.
 
-Successful publication reuses the output blob's File ID. Chat attachment grants
-cover only issued outputs, never scripts, recipes or the whole manifest. Publication
-locks Chat then receipt, merges Chat/ChatMessage attachment lists, preserves message
-content/output, creates absent ChatFile links and commits published state atomically.
-Retry verifies saved manifest/blob bytes and host grants without browser execution.
-Status reports historical acknowledgements without claiming current availability.
+Only changed retained files receive new immutable blob IDs. Unchanged bytes reuse
+acknowledged IDs. All required blobs must commit before the manifest and head.
+Browser-supplied File IDs never establish authority.
+
+Provider I/O happens outside database transactions. Each upload attempt gets a
+fresh object name; a database lock elects one File/receipt mapping. File insertion
+and its committed marker are atomic. Losing attempts can leave orphan objects;
+there is no automatic garbage collection. Partial transfers are unacknowledged,
+and deleted committed Files are never recreated automatically.
+
+Publication locks Chat then operation receipt. It merges Chat/ChatMessage
+attachment lists without changing message content/output, creates missing ChatFile
+links, and commits publication atomically. Only issued outputs get chat grants.
 
 ## Browser protocol
 
-Every native event has `files=[]`. The wrapper uses public `pyodide_js.FS`,
-`pyodide.code.run_js` and Python/JS interop; it does not discover a global Pyodide
-instance or worker internals. The shell bundle registers only its own namespace.
-The filesystem adapter performs real reads/writes on that same filesystem;
-there is no second mirrored shell filesystem.
+Native events use `files=[]`. The wrapper uses public `pyodide_js.FS`,
+`pyodide.code.run_js` and Python/JavaScript interop. It does not discover a global
+Pyodide instance or worker internals. The shell registers its own namespace only.
 
-Prepare checks the browser's actor/chat cache against the authoritative operation
-head. Warm execution reuses scratch, sends no inherited retained bytes, and does
-not resend the shell bundle when its artifact digest matches. Cold restoration reads/verifies one bounded File at
-a time and sends sequential restore callbacks before executing user source once.
-A pending root is bound to its operation before any mutation. Interleaved operations
-cannot treat it as the old acknowledged head; mismatches fail or create separate
-roots. Revision CAS remains the cross-worker authority. A runtime-wide busy flag
-prevents ordinary overlap within each browser invocation, not malicious shared code.
+Warm execution sends no inherited retained bytes and reuses the shell bundle
+when its digest matches. Cold restoration reads and verifies one bounded File at
+a time, sends sequential restore callbacks, then executes the program once.
 
-Only scripts, outputs and exact grandfathered version-one paths enter retained
-snapshots. Reject links in retained/input ancestors, replaced managed aliases,
-root escapes and special files. Scratch is not walked or base64 encoded. Compute
-retained hashes and return changed bytes plus a complete manifest; the server
-validates the final manifest against acknowledged slots and verified fresh bytes.
-New input references persist across calls and are reauthorized even when attachments
-are absent. Warm calls check File existence/grants and local input hashes; they do
-not reread/hash inherited provider objects. Cold restores and retries verify those
-actual provider bytes. A remote provider may materialize an object before the
-bounded local read; this is not remote streaming.
+A pending root is bound to its operation before mutation. Interleaved operations
+cannot reuse it as the previous acknowledged head; they fail or use separate roots.
+A runtime busy flag limits ordinary browser overlap. Database compare-and-set is
+the authority across processes; neither mechanism isolates malicious shared code.
 
-Fresh Python globals, host direct-import restrictions and supported-package hints
-remain. A recipe records exact submitted source after execution, runtime/package
-information, available micropip lock, exit code and truncation flags. The current
-head keeps only the latest recipe paths; historical receipts keep old immutable
-blobs. Full output logs stay transient. Errors/nonzero exits never issue new outputs.
+Snapshots contain scripts, outputs and exact grandfathered version-one paths.
+The wrapper rejects root escapes, special files, links in retained/input ancestors
+and replaced managed aliases. The server validates the final manifest against
+acknowledged slots and verified fresh bytes.
 
-## Build and compatibility
+Input references survive between calls and are reauthorized every time. Warm
+calls check File existence, grants and local input hashes; they do not reread
+inherited provider objects. Cold restoration and retry verify provider bytes.
+Remote reads may materialize a whole object before a bounded local read.
+
+Each call has fresh globals. Run records capture source, cwd, runtime, available
+package lock, exit status and truncation flags. The head keeps the latest recipe;
+historical receipts retain immutable earlier blobs. Full logs remain transient.
+Errors and nonzero exits do not issue outputs.
+
+## Code map
+
+Python modules are under `src/pyodide_file_saver/`.
+
+| Module | Responsibility |
+| --- | --- |
+| `tool.py` | Native entry point, status/retry, result presentation |
+| `contracts.py` | Actions, limits, receipts, path validation |
+| `workspace_state.py` | Tables, durable receipts, revision compare-and-set |
+| `workspace_execution.py` | Authorization, bounded restoration, delta commits |
+| `workspace_manifest.py` | Version-two immutable-blob manifests |
+| `openwebui_adapter.py` | Version-sensitive host, storage and chat integration |
+| `browser_workspace.py` | Browser prepare/restore/execute protocol |
+| `browser_execution.py` | Version-one recovery and package hints |
+| `browser_asset.py` | Embedded browser dependency |
+| `browser/workspace-fs.ts` | Shell access to the Pyodide filesystem |
+
+## Build and host compatibility
 
 `npm ci --ignore-scripts && npm run build` bundles the public `just-bash/browser`
-export and dependencies from the committed lockfile. Compression has an explicit
-consumer adapter that fails closed; no upstream sources are patched. Dependency
-licenses are embedded in the generated asset.
+export from the lockfile and embeds dependency licenses. The compression adapter
+rejects unsupported operations; upstream source is not patched.
 
-`python3 scripts/build_tool.py --check` embeds that asset and flattens Python
-modules in fixed order. It rejects conflicting import bindings and compares two
-builds. Generated `build/` and `dist/` are untracked. The installed artifact is
-one Python file; neither build step imports Open WebUI or runs user code.
+`python3 scripts/build_tool.py --check` embeds the asset and flattens Python
+modules in fixed order. It rejects conflicting imports and compares two builds.
+The result is one Python file. `build/` and `dist/` are untracked; building neither
+imports Open WebUI nor executes user programs.
 
-The adapter checks concrete APIs, call signatures, ORM metadata and actual schema
-before creating state. PostgreSQL coordinates replicas sharing one database;
-SQLite requires local disk locking. Separate per-replica databases and network-file
-SQLite are unsupported. See [compatibility](compatibility.md) for qualification.
+The adapter checks APIs, signatures, ORM metadata and actual schema before
+creating state. PostgreSQL replicas share one database; SQLite needs local disk
+locking. See [compatibility](compatibility.md) for requirements and evidence.
 
 The optional [package delivery utility](../ops/pyodide-packages.md) is separate
-from the Tool build and browser protocol. It inventories existing runtime assets,
-audits same-origin delivery and prepares only missing lock-verified package files
-for an administrator's existing ingress. It introduces no Tool dependency,
-application patch, execution service or package installation callback.
+from this protocol and build. It prepares missing lock-verified assets for an
+existing ingress; it adds no Tool dependency or execution service.

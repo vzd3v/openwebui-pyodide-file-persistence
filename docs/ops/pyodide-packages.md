@@ -1,21 +1,22 @@
-# Diagnose and complete Pyodide package delivery
+# Fix missing Pyodide package files
 
-The Tool uses the Pyodide runtime and package files served by Open WebUI. Some
-images ship a curated subset of the files named in `pyodide-lock.json`. A missing
-same-origin wheel can therefore fail even though that package supports Pyodide.
-This is a host asset-delivery problem, separate from workspace persistence.
-See [Open WebUI issue #29895](https://github.com/open-webui/open-webui/issues/29895).
+Use this optional administrator utility when a package supported by your Pyodide
+runtime fails to load because its asset returns HTTP 404. Some Open WebUI images
+ship only a curated subset of `pyodide-lock.json`. See
+[upstream issue #29895](https://github.com/open-webui/open-webui/issues/29895).
 
-The optional `scripts/pyodide_packages.py` utility audits those assets and prepares
-an additive mirror for administrators. It does not change the Tool, Open WebUI,
-the original runtime, lockfile, database or browser data. Python 3.11+ on POSIX
-is sufficient; no repository development dependencies are needed. Docker is only
-required when inspecting a container. Run it with an account that owns the output
-directory and can read the source assets, not through a chat Tool.
+The utility audits delivery and prepares **only missing, hash-verified package
+files** for your existing web server. Original runtime files and the lockfile stay
+authoritative. It does not change the Tool, patch Open WebUI, install packages in
+browsers or fix arbitrary incompatible PyPI wheels.
 
-## Audit first
+Use Python 3.11+ on POSIX, with no development dependencies. Docker is needed only
+for inspecting a container. Run as an administrator who can read the assets and
+owns the output directory, never through a chat Tool.
 
-From a checkout of the revision you intend to use:
+## 1. Audit the running deployment
+
+From a checkout of the revision you want to use:
 
 ```sh
 python3 scripts/pyodide_packages.py audit \
@@ -23,41 +24,34 @@ python3 scripts/pyodide_packages.py audit \
   --url https://chat.example.org/pyodide/
 ```
 
-The default asset path inside Docker is `/app/build/pyodide`; use
-`--container-assets` if your image differs. For a non-Docker deployment, replace
-`--container open-webui` with `--assets /path/to/served/pyodide`. Select the actual
-running image's directory, not an unrelated download of the same version.
+The default container path is `/app/build/pyodide`; override it with
+`--container-assets`. For a non-Docker installation, replace `--container open-webui`
+with `--assets /path/to/served/pyodide`. Use the actual running deployment's assets.
 
-Audit is read-only. It hashes the source files, checks bundled packages against
-the live lock, then downloads and hashes every served runtime and catalog asset
-with at most two concurrent requests. This can transfer over a gigabyte; run it
-deliberately. It requires HTTPS with normal certificate verification; loopback
-HTTP is supported for local testing. Redirects must remain on the configured
-origin. Signed-query redirects on that origin are supported. It does not accept
-login credentials or bypass authentication; protected static routes must be tested
-through an administrator-controlled route that serves their actual bytes.
+Audit is read-only. It checks source files against the live lock, then downloads
+and hashes every served runtime/catalog asset with at most two concurrent requests.
+**This can transfer over a gigabyte.** HTTPS certificate verification is required;
+loopback HTTP is allowed for tests. Redirects must stay on the configured origin,
+including signed-query redirects. The utility accepts no login credentials; use an
+administrator-controlled route serving the actual bytes if static routes are protected.
 
-JSON is written to stdout; diagnostics go to stderr:
+Results are JSON on stdout; diagnostics go to stderr.
 
 | Exit | Status | Meaning |
 | --- | --- | --- |
-| `0` | `complete` | Every checked served asset matches the source/lock SHA256 |
-| `2` | `incomplete` | Package assets returned HTTP 404; `missing` names them |
-| `1` | `failed` | Invalid source, missing core runtime, hash mismatch, HTTP/network failure, external redirect or changing source |
+| `0` | `complete` | All checked assets match source/lock hashes |
+| `2` | `incomplete` | Package assets returned 404; `missing` lists them |
+| `1` | `failed` | Invalid/changing source, missing core runtime, hash mismatch, HTTP/network error or external redirect |
 
-HTTP 200 containing HTML is a hash failure, not a successful package. A complete
-audit proves asset delivery for that snapshot; it does not prove arbitrary Python
-code or PyPI packages work. A native compiled PyPI wheel is not automatically
-compatible with WebAssembly. Consult the matching
-[Pyodide package documentation](https://pyodide.org/en/stable/usage/loading-packages.html)
-for package installation and supported builds.
+HTTP 200 with an HTML login/error page fails hashing. A complete audit proves
+asset delivery for that snapshot, not Python program or PyPI-wheel compatibility.
+See [Pyodide package loading](https://pyodide.org/en/stable/usage/loading-packages.html).
 
-## Prepare an additive mirror
+## 2. Prepare the missing files
 
-Choose an output directory separate from the original assets. Its existing parent
-must exist. The utility requires operator ownership and refuses symlinked output
-ancestors or directories writable by other users. The only publication symlink it
-follows is its validated `current` pointer.
+Choose a root separate from the original assets, with an existing parent directory.
+The utility requires operator ownership and rejects symlinked output ancestors or
+directories writable by others. It follows only its validated `current` pointer.
 
 ```sh
 python3 scripts/pyodide_packages.py prepare \
@@ -65,57 +59,55 @@ python3 scripts/pyodide_packages.py prepare \
   --root /var/lib/pyodide-packages
 ```
 
-Preparation downloads the official `pyodide-VERSION.tar.bz2` release matching the
-running runtime. Offline use accepts `--archive /path/to/pyodide-VERSION.tar.bz2`.
-The archive is never trusted as a replacement runtime: only missing basenames
-whose bytes match the running lock's SHA256 are selected. An absent custom package,
-unsafe lock, mismatched hash, duplicate archive entry or linked package fails
-explicitly and preserves the previous publication. URL-based/non-basename lock
-entries are unsupported and rejected; no alternate CDN is selected automatically.
+This downloads the official `pyodide-VERSION.tar.bz2` for the running runtime.
+For offline use, add `--archive /path/to/pyodide-VERSION.tar.bz2`. Only missing
+basenames matching the live lock's SHA-256 are selected. Missing custom packages,
+unsafe locks, wrong hashes, duplicate entries or linked packages fail without
+changing the previous publication. URL-based/non-basename lock entries are rejected;
+no alternate browser CDN is selected automatically.
 
-Verified packages are cached privately and reused after interruption. Published
-generations are separate copies: repairs stage a new generation, never overwrite
-files in the current one. A nonblocking process lock prevents concurrent prepares;
-the source inventory is read again before an atomic `current` symlink swap.
-An unchanged repeat returns `status: unchanged` without rewriting current files.
-Run preparation again after changing the Open WebUI image or lockfile; do not serve
-a previous generation as if it were qualified for a new runtime.
+Preparation caches verified packages, rechecks the source inventory and atomically
+switches `current` to a new immutable generation. A nonblocking process lock prevents
+concurrent preparation. Unchanged repeats return `status: unchanged`. Repairs stage
+a new generation rather than overwriting published files. Prepare again after
+changing the Open WebUI image or lockfile.
 
-The output contains:
-
-| Path | Intended access |
+| Path | Access |
 | --- | --- |
-| `current/pyodide/` | Only missing package files, readable by the existing web server |
-| `releases/*/manifest.json` | Operator-only source inventory; never web-expose |
-| `private/` | Operator-only archive, verified cache and preparation log |
-| `prepare.lock` | Local coordination, never web-expose |
+| `current/pyodide/` | Missing packages; readable by the existing web server |
+| `releases/*/manifest.json` | Private source inventory; never serve |
+| `private/` | Private archive, verified cache and log; never serve |
+| `prepare.lock` | Local coordination; never serve |
 
-Directories are created with mode `0750`, published files with `0640`, private
-directories with `0700`, manifests/cache/log files with `0600`. Use your existing
-web-server group or ACL policy to grant traversal of publication ancestors and
-read access to published packages only. A setgid output directory with the intended
-web-server group can provide group inheritance; do not grant access to `private/`
-or manifests. The helper does not grant permissions, edit nginx or reload services.
+Directories use `0750`, published files `0640`, private directories `0700`, and
+manifests/cache/logs `0600`. Grant the web server traversal/read access only to the
+publication using your group or ACL policy. A setgid root with the intended group
+can provide inheritance. The helper does not grant access, edit nginx or reload it.
 
-Transfers are bounded to 2 GiB per archive, 1 GiB per package and 8 GiB of selected
-archive contents; total decompressed archive data, including skipped entries,
-is bounded to 16 GiB. Only stable numeric Pyodide versions are accepted.
-Downloads use a 60-second socket timeout. A partial archive
-download is retried from the beginning; already verified package cache entries
-remain reusable. A damaged cached archive can be removed from `private/` by its
-operator before retrying. Old/staged generations are retained for inspection and
-rollback; there is no automatic garbage collection.
+### Transfer and disk limits
 
-## Connect the existing web server
+| Resource | Bound |
+| --- | --- |
+| Compressed archive | 2 GiB |
+| One package | 1 GiB |
+| Selected archive contents | 8 GiB |
+| All decompressed contents, including skipped entries | 16 GiB |
+| Download socket timeout | 60 seconds |
 
-Preserve your existing `/pyodide/` proxy and headers. Add interception of **only
-404** to an internal fallback. For example, merge the following into an existing
-nginx server configuration; the upstream name is illustrative:
+Only stable numeric Pyodide versions are accepted. Interrupted archive downloads
+restart from the beginning; verified package cache entries remain reusable. An
+operator can remove a damaged cached archive from `private/` before retrying.
+Old/staged generations remain for inspection and rollback; cleanup is manual.
+
+## 3. Add a 404-only fallback
+
+Preserve the existing `/pyodide/` proxy and headers. Merge a fallback for **404
+only** into the existing ingress. For nginx, using an illustrative upstream name:
 
 ```nginx
 location /pyodide/ {
     proxy_pass http://openwebui;
-    # Keep the deployment's existing proxy/cache/security settings here.
+    # Preserve existing proxy/cache/security settings.
     proxy_intercept_errors on;
     error_page 404 = @pyodide_packages;
 }
@@ -125,28 +117,28 @@ location @pyodide_packages {
     root /var/lib/pyodide-packages/current;
     try_files $uri =404;
     expires -1;
-    # Apply the same required security/cross-origin headers as original assets.
+    # Apply the original assets' required security/cross-origin headers.
 }
 ```
 
-Never expose the output root with a broad `alias` or directory listing. Original
-successful responses remain authoritative, including runtime and lock bytes;
-other upstream errors remain errors. Keep deployment-specific CSP, cross-origin,
-cache and content-type policies consistent for these package responses. Validate
-and reload your existing ingress through its normal procedure, then rerun `audit`
-against the public URL. An audit that remains `incomplete` often indicates missing
-read/traverse permission or a fallback path that does not match `/pyodide/`.
+Successful upstream responses stay authoritative, including runtime and lock
+bytes. Other upstream errors remain errors. Preserve CSP, cross-origin, cache
+and content-type policies. Never expose the output root through a broad `alias`
+or directory listing.
 
-The mirror delivers package bytes; it does not install them into every browser.
-Use normal Pyodide loading or `await micropip.install(...)` when needed. A fresh
-browser still requires package installation. These upstream packages retain their
-own licenses; this repository's MIT license covers the utility, not every mirrored
-package. No Pyodide archive or package bytes are distributed in this repository.
+Validate and reload the existing ingress normally, then rerun `audit` against its
+public URL. If it remains `incomplete`, check web-server read/traverse permissions
+and the fallback's `/pyodide/` path.
+
+The mirror supplies bytes, not installed packages. Use normal Pyodide loading or
+`await micropip.install(...)`; a fresh browser still needs installation. Mirrored
+packages retain their own licenses. This repository distributes no Pyodide archive
+or package bytes; its MIT license covers the utility.
 
 ## Roll back
 
-Remove the fallback from the ingress and reload it to return to original delivery.
-Keep original runtime assets and saved workspace data intact. For a mirror-only
-rollback, atomically select a retained generation prepared for the **same** source
-inventory, then audit it. Do not delete a generation still referenced by `current`
-or in use by the web server. This utility does not manage application upgrades.
+Remove the ingress fallback and reload to return to original delivery. Preserve
+original assets and workspace data. To roll back only the mirror, atomically select
+a retained generation for the **same source inventory**, then audit it. Never delete
+a generation referenced by `current` or still in use. This utility does not manage
+application upgrades.
