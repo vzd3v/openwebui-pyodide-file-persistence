@@ -1,7 +1,8 @@
 # Testing
 
 Set up the checkout through [Contributing](../../CONTRIBUTING.md). Commands use a
-POSIX shell. CI runs on Ubuntu with Python 3.11–3.15.
+POSIX shell. The [CI workflow](../../.github/workflows/checks.yml) defines the
+Python matrix and service versions.
 
 ## Local checks
 
@@ -76,7 +77,7 @@ not native Open WebUI acceptance or available RAM on every device.
 
 CI runs formatting, lint, strict types, deterministic builds, unit and integration
 tests. Linux jobs cap unit execution at 30 seconds and integration at 5 minutes.
-The generated single-file Tool is exercised through initialization, publication
+The built Tool file is exercised through initialization, publication
 and fresh restoration with a synthetic host and real SQLite/PostgreSQL.
 
 Race/restart tests use committed connections and separate processes. Replace only
@@ -86,7 +87,7 @@ line-count quotas or coverage-percentage gate; focused test-only PRs are welcome
 
 ## Native Open WebUI acceptance
 
-For a release or deployment, test the exact generated artifact, host version,
+For a release or deployment, test the exact Tool file, host version,
 browser and storage provider. Use the real served Pyodide worker and ordinary
 assistant calls. Include:
 
@@ -97,7 +98,7 @@ assistant calls. Include:
 - Interruption, failure and recovery paths relevant to the deployment.
 
 Callback simulation, source inspection, loading a schema and passing CI do not
-replace these checks. A new build does not inherit an older artifact's acceptance.
+replace these checks. A new build does not inherit an older build's acceptance.
 See [compatibility](compatibility.md) for the recorded scope.
 
 Keep deployment identities, tokens, raw chats and operational evidence out of the

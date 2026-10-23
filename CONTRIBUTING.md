@@ -27,11 +27,12 @@ npm run build
 uv run python scripts/build_tool.py --check
 ```
 
-The generated Tool is `dist/openwebui_pyodide_file_saver.py`. The build prints its
-SHA-256 and requires no running Open WebUI instance. Keep development dependencies
-local to the checkout; do not install this environment into Open WebUI. Commit
-source and lockfiles, not generated `build/` or `dist/` files. Change dependencies
-only intentionally.
+The build combines the Python modules and browser shell into
+`dist/openwebui_pyodide_file_saver.py`, ready to import into Open WebUI. It prints
+the file's SHA-256 and requires no running Open WebUI instance. Keep development
+dependencies local to the checkout; do not install this environment into Open
+WebUI. Commit source and lockfiles, not generated `build/` or `dist/` files. Change
+dependencies only intentionally.
 
 Read [architecture](docs/dev/architecture.md) for the code map and persistence
 model, [Tool reference](docs/dev/tool-reference.md) for API behavior, and
@@ -48,9 +49,11 @@ model, [Tool reference](docs/dev/tool-reference.md) for API behavior, and
 5. Address review feedback. A maintainer merges after CI passes; delete the branch
    after merge. Do not push directly to `main` or bypass failing checks.
 
-CI checks formatting, lint, strict types, reproducible builds, Python 3.11–3.15
-with SQLite/PostgreSQL, and the Chromium worker. These tests do not qualify every
-Open WebUI host or storage provider. Report observed evidence at its actual scope.
+CI checks formatting, lint, strict types, reproducible builds, Python with
+SQLite/PostgreSQL, and the Chromium worker. The
+[workflow](.github/workflows/checks.yml) defines the Python matrix. These tests do
+not qualify every Open WebUI host or storage provider. Report observed evidence
+at its actual scope.
 
 ## Preserve these boundaries
 
@@ -64,4 +67,4 @@ Open WebUI host or storage provider. Report observed evidence at its actual scop
   boundaries; callback fixtures do not prove stock UI behavior.
 
 Integration code is [MIT](LICENSE). Bundled dependency licenses appear in
-[third-party notices](THIRD_PARTY_NOTICES.txt) and the generated Tool.
+[third-party notices](THIRD_PARTY_NOTICES.txt) and the Tool file.
