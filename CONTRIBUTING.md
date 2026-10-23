@@ -1,8 +1,7 @@
 # Contributing
 
-Documentation fixes, bug reports and focused code changes are welcome. The Tool
-is experimental; check [compatibility](docs/dev/compatibility.md) before testing
-against an Open WebUI instance.
+Documentation fixes, bug reports and focused code changes are welcome. See
+[compatibility](docs/dev/compatibility.md) for host requirements and test coverage.
 
 ## Report a problem
 

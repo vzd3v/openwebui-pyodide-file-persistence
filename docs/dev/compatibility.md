@@ -1,8 +1,6 @@
 # Compatibility
 
-This project is an experimental pre-release. The installer minimum is **Open
-WebUI 0.12.0**. It is a minimum requirement, not a promise that every later version,
-fork, browser or storage provider works.
+Requires **Open WebUI 0.12.0 or newer** with the host contracts below.
 
 The adapter checks concrete capabilities before use. Those checks can reject an
 incompatible host; they cannot prove every frontend or permission behavior. Test

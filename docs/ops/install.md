@@ -4,8 +4,8 @@ This guide is for an Open WebUI administrator. Installation adds one native Tool
 and two tables to the existing database. It does not require an execution server,
 frontend patch or separate database.
 
-The project is experimental. Check [compatibility](../dev/compatibility.md) and
-test with synthetic files before giving users access.
+Check [compatibility](../dev/compatibility.md), then use the installation checks
+below to verify downloads, sharing and recovery.
 
 ## Requirements
 

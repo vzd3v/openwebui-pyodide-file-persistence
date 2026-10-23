@@ -1,18 +1,25 @@
-# Browser files and shell commands for Open WebUI
+# Browser execution for multi-user Open WebUI
 
-Open WebUI's built-in Code Interpreter runs Python in your browser through
-Pyodide. Generated files can appear in its browser file panel while links in the
-assistant's answer or shared chat still fail. For file searches and edits, the
-agent also has to write Python instead of using shell commands.
+Run Python in each user's browser, with **working download links in answers and
+shared chats, saved scripts and results, and shell file commands for the agent.**
+No additional execution server, per-user execution containers or Kubernetes
+cluster is required. Open WebUI stores selected files and controls access.
 
-This Tool adds **working download links, saved files and shell file commands** to
-browser execution. Ask for a report, download it from the assistant's answer,
-and share the chat with someone who has permission to read it. Keep the source
-program to rerun the calculation later.
+**Up to 10× fewer tokens on file operations, as reported by the maintainer.**
+The agent can search with `rg`, edit with `sed`, filter JSON with `jq`, and copy
+or move files with `cp` and `mv`, instead of generating Python for each step.
+This also reduces time spent generating and debugging code. Savings depend on
+the task and model; no benchmark has been published.
 
-Python and shell commands use the same browser filesystem. Computation stays on
-the user's device; Open WebUI stores the selected files and handles access and
-downloads. **No additional execution server is needed.**
+The built-in Pyodide interpreter already creates files. But a user who clicks a
+broken link in the answer has to know to look in the sidebar's Files panel instead.
+Sharing the chat does not automatically turn browser-local files into downloadable
+attachments for its recipients.
+
+This Tool saves selected results as native Open WebUI files and gives the assistant
+their download links. Authorized recipients can download them from shared chats.
+Python and shell commands use the same browser files; saved source programs and
+results can be restored later to rerun a calculation.
 
 ## What you can do
 
@@ -26,16 +33,12 @@ downloads. **No additional execution server is needed.**
   update the report.” Selected programs and results can be restored in a fresh
   browser; temporary data can stay out of storage.
 
-For file-heavy tasks, short shell commands and reusable programs avoid repeated
-code generation. Keeping intermediate data in files and returning a small summary
-can also reduce model context.
-
 ## How it compares
 
 | Option | What it provides | What to consider |
 | --- | --- | --- |
-| Built-in Pyodide Code Interpreter | Python, a browser file panel and optional browser-local persistence | Arbitrary generated-file links in answers/shared chats are unreliable; no agent shell file commands |
-| This Tool | Browser Python and limited shell commands over shared files; native download links; selected files saved for later work | Experimental; requires a connected browser and compatible host; not a full Linux environment |
+| Built-in Pyodide Code Interpreter | Python, a browser file panel and optional browser-local persistence | Users must find files in the sidebar when answer links fail; browser-local files do not automatically become shared-chat attachments; file operations require Python |
+| This Tool | Downloads from answers and authorized shared chats; saved programs and results; browser Python and shell file commands | Requires a connected browser and compatible host; shell supports file operations, not native Linux processes |
 | Open Terminal | Server-side Python and a full terminal | Requires server resources and administration; free multi-user mode uses Linux accounts in a shared container, while managed per-user containers use Enterprise Terminals |
 
 The built-in interpreter already supports browser files and image output. See the
@@ -43,9 +46,8 @@ The built-in interpreter already supports browser files and image output. See th
 
 ## Install and try it
 
-**Experimental pre-release.** The installer requires Open WebUI 0.12.0 or newer;
-that minimum is not a guarantee for every later version or storage provider.
-Read [compatibility](docs/dev/compatibility.md) before enabling it.
+Requires **Open WebUI 0.12.0 or newer** with the
+[compatible Tool APIs and storage](docs/dev/compatibility.md).
 
 1. Download [`openwebui_pyodide_file_saver.py` from release 0.2.0a3](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases/download/v0.2.0a3/openwebui_pyodide_file_saver.py).
 2. In **Workspace → Tools**, create a Tool and paste the complete file. Enable it

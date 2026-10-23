@@ -61,8 +61,8 @@ timeout. A backend timeout does not prove that the browser worker stopped.
 Remote providers may materialize an entire object before bounded local reads.
 Browser command limits are not a device-memory guarantee.
 
-The project is a pre-release. [Capability checks and automated tests](docs/dev/compatibility.md)
-do not qualify every native host/provider. Keep persistence enabled and follow
+[Capability checks and automated tests](docs/dev/compatibility.md) do not qualify
+every native host/provider. Keep persistence enabled and follow
 saved-data compatibility rules rather than deleting state to resolve an error.
 
 ## Optional package utility
