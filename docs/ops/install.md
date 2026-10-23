@@ -25,9 +25,9 @@ see [Contributing](../../CONTRIBUTING.md).
 
 1. Back up the database and file storage normally. Keep browser persistence
    enabled and existing browser files intact.
-2. Download [`openwebui_pyodide_file_saver.py` from 0.2.0a3](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases/download/v0.2.0a3/openwebui_pyodide_file_saver.py).
-   Its SHA-256 is
-   `8b4e3063ff5ce19372b34535a664abb7e6b03fc69ea44195b2a2288138700958`.
+2. Open [Releases](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases).
+   Under **Assets** for the release you want, download `openwebui_pyodide_file_saver.py`.
+   GitHub lists a SHA-256 digest with the asset for verifying your download.
 3. Under **Workspace → Tools**, create a Tool, paste the complete file and save.
    When upgrading an existing registration, update it in place instead of leaving
    duplicate `execute_code` Tools enabled.

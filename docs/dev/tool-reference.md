@@ -70,7 +70,7 @@ Open WebUI package-loading hints; `importlib.import_module()` and `find_spec()`
 probes do not request that preload. Use explicit imports or supported
 Pyodide/micropip installation. Native subprocesses and OS threads are unavailable.
 
-The pinned [just-bash 3.6.0](https://github.com/vercel-labs/just-bash) browser library
+The bundled [just-bash](https://github.com/vercel-labs/just-bash) browser library
 provides pipelines, redirection, loops and selected commands:
 
 - Files: `cat`, `cp`, `mv`, `rm`, `mkdir`, `find`, `ls`, `stat`, `tree`, `touch`,

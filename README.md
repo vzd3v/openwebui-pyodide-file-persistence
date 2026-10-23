@@ -49,7 +49,8 @@ The built-in interpreter already supports browser files and image output. See th
 Requires **Open WebUI 0.12.0 or newer** with the
 [compatible Tool APIs and storage](docs/dev/compatibility.md).
 
-1. Download [`openwebui_pyodide_file_saver.py` from release 0.2.0a3](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases/download/v0.2.0a3/openwebui_pyodide_file_saver.py).
+1. Open [Releases](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases).
+   Under **Assets** for the release you want, download `openwebui_pyodide_file_saver.py`.
 2. In **Workspace → Tools**, create a Tool and paste the complete file. Enable it
    for a test chat with native function calling and the Pyodide engine. Disable
    the model's built-in Code Interpreter. Complete the
@@ -86,5 +87,5 @@ browser memory independently. Empty retained files require local storage.
 
 ## License
 
-Integration code: [MIT](LICENSE). The generated Tool includes just-bash under
+Integration code: [MIT](LICENSE). The Tool file includes just-bash under
 Apache-2.0 and its dependency licenses; see [third-party notices](THIRD_PARTY_NOTICES.txt).

@@ -38,40 +38,33 @@ Native S3/GCS/Azure deletion cannot safely handle this representation, so new em
 Files are rejected for those and unknown providers. Previously saved empty Files
 remain readable. Remote-provider behavior otherwise needs its own qualification.
 
-## Current artifact: 0.2.0a3
+## Automated coverage
 
-The released single-file Tool has SHA-256:
-
-```text
-8b4e3063ff5ce19372b34535a664abb7e6b03fc69ea44195b2a2288138700958
-```
-
-Automated coverage includes:
-
-- Python 3.11–3.15 checks with real disk SQLite and PostgreSQL, including generated
-  Tool initialization, publication and fresh restoration through synthetic host
+- Python checks with real disk SQLite and PostgreSQL, including Tool
+  initialization, publication and fresh restoration through synthetic host
   and callback boundaries.
 - A Chromium module worker using the production wrapper and public Pyodide APIs:
   shared Python/shell files, 256 MiB scratch, 32 MiB binary shell operations,
   retained deltas, fresh-worker restoration and rejected links.
 - Fixed-root calls and saved-data compatibility tests.
 
+The [CI workflow](../../.github/workflows/checks.yml) defines the Python matrix.
 The [test guide](testing.md) explains these boundaries and the native acceptance
 checklist. Automated fixtures do not establish native Open WebUI acceptance or a
 browser-memory capacity guarantee. Portable Tool/build Python support does not
 extend Open WebUI's own host Python requirements.
 
-## Earlier browser observations
+## Recorded browser checks
 
-These are scoped to earlier artifacts; a new artifact does not inherit their
+These checks apply to the Tool versions listed below. A new build needs its own
 native acceptance. The observed configuration used Open WebUI 0.12.2, PostgreSQL
 and local storage. It was not established as a pristine upstream installation;
 no frontend patch was added for this Tool.
 
-| Artifact | Observed native behavior |
+| Tool version and file checksum | Observed native behavior |
 | --- | --- |
 | `0.2.0a2`, SHA-256 `207e92d57f9ab69bf97cc9c79527b989523ae3b86c3fbfb5d8d79d53605c05bd` | Genuine Python → same-page Bash → fresh-browser saved-program rerun; empty imported initializer; 128 MiB warm scratch absent after restoration; original input reference and unchanged File ID reuse; new/warm/restored context |
-| Same a2 artifact | Empty outputs, including `html` and Unicode names; duplicate basenames; nonempty→empty→nonempty immutable IDs; owner/recipient inline downloads with exact bytes/names; foreign/private denial and revocation/regrant; older saved links and a1 receipts readable |
+| Same a2 file | Empty outputs, including `html` and Unicode names; duplicate basenames; nonempty→empty→nonempty immutable IDs; owner/recipient inline downloads with exact bytes/names; foreign/private denial and revocation/regrant; older saved links and a1 receipts readable |
 | `0.2.0a1`, SHA-256 `7c3a04c4d152f2fdd24e5fc24dbb039ee5756b01e3baea5b27e958dc7a0bfad7` | Python/Bash shared files; warm scratch and fresh restoration; saved-program rerun; unchanged File ID reuse; original native CSV without duplicate upload; owner/recipient downloads after reload; foreign/private denial, revocation and deleted-input rejection |
 
 Empty-file deletion was checked separately with a manually created native File

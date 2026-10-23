@@ -21,6 +21,9 @@ force-added. Public contributors do not need this optional local file.
   credentials, personal data, conversations or deployment-specific configuration.
 - Update documentation when behavior changes. Distinguish automated tests,
   real-browser observations and unverified compatibility claims.
+- Keep installation instructions release-neutral: link to Releases, with checksums
+  on release assets. Retain exact versions for requirements, reproducible examples
+  and scoped compatibility evidence; link to CI/lockfiles for test and dependency versions.
 - Follow [verification instructions](docs/dev/testing.md). Report skipped checks
   explicitly; simulated host callbacks are not browser acceptance evidence.
 - Edit source modules, not generated `dist/` files. Build deterministically with
