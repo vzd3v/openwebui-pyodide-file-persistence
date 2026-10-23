@@ -38,7 +38,7 @@ results can be restored later to rerun a calculation.
 | Option | What it provides | What to consider |
 | --- | --- | --- |
 | Built-in Pyodide Code Interpreter | Python, a browser file panel and optional browser-local persistence | Users must find files in the sidebar when answer links fail; browser-local files do not automatically become shared-chat attachments; file operations require Python |
-| This Tool | Downloads from answers and authorized shared chats; saved programs and results; browser Python and shell file commands | Experimental; requires a connected browser and compatible host; not a full Linux environment |
+| This Tool | Downloads from answers and authorized shared chats; saved programs and results; browser Python and shell file commands | Requires a connected browser and compatible host; shell supports file operations, not native Linux processes |
 | Open Terminal | Server-side Python and a full terminal | Requires server resources and administration; free multi-user mode uses Linux accounts in a shared container, while managed per-user containers use Enterprise Terminals |
 
 The built-in interpreter already supports browser files and image output. See the
@@ -46,9 +46,8 @@ The built-in interpreter already supports browser files and image output. See th
 
 ## Install and try it
 
-**Experimental pre-release.** The installer requires Open WebUI 0.12.0 or newer;
-that minimum is not a guarantee for every later version or storage provider.
-Read [compatibility](docs/dev/compatibility.md) before enabling it.
+Requires **Open WebUI 0.12.0 or newer** with the
+[compatible Tool APIs and storage](docs/dev/compatibility.md).
 
 1. Download [`openwebui_pyodide_file_saver.py` from release 0.2.0a3](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases/download/v0.2.0a3/openwebui_pyodide_file_saver.py).
 2. In **Workspace → Tools**, create a Tool and paste the complete file. Enable it
