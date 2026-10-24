@@ -58,6 +58,11 @@ promise browser-console secrecy.
 
 Retained transfers stay below stock 16 MiB callbacks and the 60-second frontend
 timeout. A backend timeout does not prove that the browser worker stopped.
+Durable gates limit repeat dispatch across workers and reconnects; they do not
+guarantee exactly-once arbitrary code or bound a model's token use. Known failure
+envelopes are normalized fail-closed protocol signals, not trusted browser claims.
+Optional native cancellation affects the server response only and needs separate
+host qualification; see [execution limits](docs/user/limitations.md).
 Remote providers may materialize an entire object before bounded local reads.
 Browser command limits are not a device-memory guarantee.
 

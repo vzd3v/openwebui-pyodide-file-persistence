@@ -32,6 +32,7 @@ class WorkspaceReply(StrictModel):
     exit_code: int = 0
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    execution_completed: bool = False
     manifest: list[ManifestEntry] = Field(default_factory=list)
     files: list[TransferFile] = Field(default_factory=list)
 
@@ -65,8 +66,13 @@ async def __FUNCTION__():
         return response(outcome="busy", stderr="Another managed execution is still running")
     bi._pyodide_file_saver_busy = cfg["operation_id"]
     old_cwd, old_import = os.getcwd(), bi.__import__
+    evidence = {}
     try:
         continuation = cfg.get("continuation", False)
+        if cfg["phase"] == "recover":
+            if not state or state["head"] != cfg["operation_id"]:
+                return response(outcome="recovery_unavailable")
+            continuation = True
         if continuation and not (state and state["head"] == cfg["operation_id"]):
             raise ValueError("Browser restore sequence changed")
         if not continuation and cfg["warm"] and not warm:
@@ -78,6 +84,8 @@ async def __FUNCTION__():
             state = dict(root=root, head=cfg["head"], inputs=[])
             cache[cfg["key"]] = state
         root = state["root"]
+        if cfg["phase"] != "recover":
+            state.pop("execution", None)
         # Any mutation makes this root pending until this operation is acknowledged.
         state["head"] = cfg["operation_id"]
         def target(relative):
@@ -134,99 +142,116 @@ async def __FUNCTION__():
         cwd = root if cfg["cwd"] == "." else target(cfg["cwd"])
         if not os.path.isdir(cwd):
             raise ValueError("Requested cwd does not exist")
-        record_base = "scripts/.runs"
-        while record_base in cfg["legacy_paths"]:
-            record_base += "-current"
-        record_relative = record_base + "/latest"
-        while any(p == record_relative or p.startswith(record_relative + "/")
-                  for p in cfg["legacy_paths"]):
-            record_relative += "-current"
-        record_dir = regular(record_relative)
-        os.makedirs(record_dir, exist_ok=True)
-        source_name = "source.py" if cfg["language"] == "python" else "source.sh"
-        with open(record_dir + "/" + source_name, "w", encoding="utf-8") as stream:
-            stream.write(cfg["code"])
-        record = dict(version=2, operation_id=cfg["operation_id"], language=cfg["language"],
-            cwd=cfg["cwd"], source=source_name, python=sys.version.split()[0],
-            inputs=cfg["inputs"], shell="just-bash@3.6.0" if cfg["language"] == "bash" else None)
-        # Only package names/versions; no environment, credentials or runtime globals.
-        import importlib.metadata
-        class Capture(io.TextIOBase):
-            def __init__(self, path):
-                self.file = open(path, "w", encoding="utf-8")
-                self.parts, self.truncated = [], False
-                self.remaining = cfg["limits"]["max_text_bytes"]
-            def write(self, value):
-                self.file.write(value)
-                raw = value.encode("utf-8", "replace")
-                kept = raw[:self.remaining]
-                self.parts.append(kept.decode("utf-8", "ignore"))
-                self.remaining -= len(kept)
-                self.truncated |= len(raw) > len(kept)
-                return len(value)
-            def value(self):
-                self.file.flush()
-                return "".join(self.parts)
-        stdout = Capture(root + "/work/" + cfg["operation_id"] + ".stdout")
-        stderr = Capture(root + "/work/" + cfg["operation_id"] + ".stderr")
-        exit_code = 0
-        os.chdir(cwd)
-        def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if (name.split(".")[0] in cfg["blocked_modules"]
-                    and (globals or {}).get("__name__") == "__main__"):
-                raise ImportError("Direct import of this module is restricted by the host")
-            return old_import(name, globals, locals, fromlist, level)
-        try:
-            if cfg["language"] == "bash":
-                if not shell_ready:
-                    run_js(cfg["shell_asset"])
-                    bi._pyodide_file_saver_shell_digest = cfg.get("shell_digest")
-                import pyodide_js
-                from pyodide.ffi import to_js
-                from js import Object
-                shell = run_js("globalThis.__pyodideFileSaverShell").create(pyodide_js.FS, root)
-                options = to_js(dict(cwd="/" if cfg["cwd"] == "." else "/"+cfg["cwd"]),
-                    dict_converter=Object.fromEntries)
-                result = await shell.exec(cfg["code"], options)
-                stdout.write(str(result.stdout))
-                stderr.write(str(result.stderr))
-                exit_code = int(result.exitCode)
-            else:
-                bi.__import__ = restricted_import
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    namespace = dict(__name__="__main__", __builtins__=bi.__dict__)
-                    compiled = compile(cfg["code"], "<managed-python>", "exec",
-                        flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-                    value = eval(compiled, namespace)
-                    if inspect.isawaitable(value):
-                        await value
-        except BaseException:
-            exit_code = 1
-            traceback.print_exc(file=stderr)
-        finally:
-            bi.__import__ = old_import
-        record["packages"] = sorted({d.metadata["Name"]: d.version
-            for d in importlib.metadata.distributions()}.items())
-        try:
-            import micropip
-            record["dependency_lock"] = jsn.loads(micropip.freeze())
-            record["dependency_lock_format"] = "pyodide-lock"
-        except ImportError:
-            record["dependency_lock"] = None
-            record["dependency_lock_format"] = "unavailable: micropip is not installed"
-        except Exception:
-            record["dependency_lock"] = None
-            record["dependency_lock_format"] = "unavailable: installed packages could not be frozen"
-        record.update(exit_code=exit_code, stdout_truncated=stdout.truncated,
-            stderr_truncated=stderr.truncated)
-        # Code may edit its own source; acknowledged provenance is always the
-        # submitted source. Recheck all ancestors after code before any write.
-        source_path = regular(record_relative + "/" + source_name)
-        record_path = regular(record_relative + "/record.json")
-        with open(source_path, "w", encoding="utf-8") as stream:
-            stream.write(cfg["code"])
-        with open(record_path, "w", encoding="utf-8") as stream:
-            jsn.dump(record, stream, ensure_ascii=True, sort_keys=True)
+        async def execute():
+            record_base = "scripts/.runs"
+            while record_base in cfg["legacy_paths"]:
+                record_base += "-current"
+            record_relative = record_base + "/latest"
+            while any(p == record_relative or p.startswith(record_relative + "/")
+                      for p in cfg["legacy_paths"]):
+                record_relative += "-current"
+            record_dir = regular(record_relative)
+            os.makedirs(record_dir, exist_ok=True)
+            source_name = "source.py" if cfg["language"] == "python" else "source.sh"
+            with open(record_dir + "/" + source_name, "w", encoding="utf-8") as stream:
+                stream.write(cfg["code"])
+            record = dict(version=2, operation_id=cfg["operation_id"], language=cfg["language"],
+                cwd=cfg["cwd"], source=source_name, python=sys.version.split()[0],
+                inputs=cfg["inputs"],
+                shell="just-bash@3.6.0" if cfg["language"] == "bash" else None)
+            # Only package names/versions; no environment, credentials or runtime globals.
+            import importlib.metadata
+            class Capture(io.TextIOBase):
+                def __init__(self, path):
+                    self.file = open(path, "w", encoding="utf-8")
+                    self.parts, self.truncated = [], False
+                    self.remaining = cfg["limits"]["max_text_bytes"]
+                def write(self, value):
+                    self.file.write(value)
+                    raw = value.encode("utf-8", "replace")
+                    kept = raw[:self.remaining]
+                    self.parts.append(kept.decode("utf-8", "ignore"))
+                    self.remaining -= len(kept)
+                    self.truncated |= len(raw) > len(kept)
+                    return len(value)
+                def value(self):
+                    self.file.flush()
+                    return "".join(self.parts)
+            stdout = Capture(root + "/work/" + cfg["operation_id"] + ".stdout")
+            stderr = Capture(root + "/work/" + cfg["operation_id"] + ".stderr")
+            exit_code = 0
+            os.chdir(cwd)
+            def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if (name.split(".")[0] in cfg["blocked_modules"]
+                        and (globals or {}).get("__name__") == "__main__"):
+                    raise ImportError("Direct import of this module is restricted by the host")
+                return old_import(name, globals, locals, fromlist, level)
+            try:
+                if cfg["language"] == "bash":
+                    if not shell_ready:
+                        run_js(cfg["shell_asset"])
+                        bi._pyodide_file_saver_shell_digest = cfg.get("shell_digest")
+                    import pyodide_js
+                    from pyodide.ffi import to_js
+                    from js import Object
+                    shell = run_js("globalThis.__pyodideFileSaverShell").create(pyodide_js.FS, root)
+                    options = to_js(dict(cwd="/" if cfg["cwd"] == "." else "/"+cfg["cwd"]),
+                        dict_converter=Object.fromEntries)
+                    result = await shell.exec(cfg["code"], options)
+                    stdout.write(str(result.stdout))
+                    stderr.write(str(result.stderr))
+                    exit_code = int(result.exitCode)
+                else:
+                    bi.__import__ = restricted_import
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        namespace = dict(__name__="__main__", __builtins__=bi.__dict__)
+                        compiled = compile(cfg["code"], "<managed-python>", "exec",
+                            flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+                        value = eval(compiled, namespace)
+                        if inspect.isawaitable(value):
+                            await value
+            except BaseException:
+                exit_code = 1
+                traceback.print_exc(file=stderr)
+            finally:
+                bi.__import__ = old_import
+            state["execution"] = dict(execution_completed=True, exit_code=exit_code,
+                stdout=stdout.value(), stderr=stderr.value(), stdout_truncated=stdout.truncated,
+                stderr_truncated=stderr.truncated)
+            record["packages"] = sorted({d.metadata["Name"]: d.version
+                for d in importlib.metadata.distributions()}.items())
+            try:
+                import micropip
+                record["dependency_lock"] = jsn.loads(micropip.freeze())
+                record["dependency_lock_format"] = "pyodide-lock"
+            except ImportError:
+                record["dependency_lock"] = None
+                record["dependency_lock_format"] = "unavailable: micropip is not installed"
+            except Exception:
+                record["dependency_lock"] = None
+                record["dependency_lock_format"] = (
+                    "unavailable: installed packages could not be frozen")
+            record.update(exit_code=exit_code, stdout_truncated=stdout.truncated,
+                stderr_truncated=stderr.truncated)
+            # Code may edit its own source; acknowledged provenance is always the
+            # submitted source. Recheck all ancestors after code before any write.
+            source_path = regular(record_relative + "/" + source_name)
+            record_path = regular(record_relative + "/record.json")
+            with open(source_path, "w", encoding="utf-8") as stream:
+                stream.write(cfg["code"])
+            with open(record_path, "w", encoding="utf-8") as stream:
+                jsn.dump(record, stream, ensure_ascii=True, sort_keys=True)
+            evidence = dict(execution_completed=True, exit_code=exit_code,
+                stdout=stdout.value(), stderr=stderr.value(), stdout_truncated=stdout.truncated,
+                stderr_truncated=stderr.truncated)
+            stdout.file.close()
+            stderr.file.close()
+            return evidence
+        if cfg["phase"] != "recover":
+            state["execution"] = await execute()
+        evidence = state.get("execution")
+        if not evidence:
+            return response(outcome="recovery_unavailable")
         # Aliases are checked again after arbitrary user code, but never traversed.
         if os.path.realpath(root) != root or not stat.S_ISDIR(os.lstat(root).st_mode):
             raise ValueError("Managed root replaced")
@@ -269,15 +294,13 @@ async def __FUNCTION__():
                     changed.append(dict(path=relative,
                         data=base64.b64encode(stream.read()).decode("ascii")))
         state["head"] = cfg["operation_id"]
-        text = response(outcome="ok" if exit_code == 0 else "execution_error", exit_code=exit_code,
-            stdout=stdout.value(), stderr=stderr.value(), stdout_truncated=stdout.truncated,
-            stderr_truncated=stderr.truncated, manifest=manifest, files=changed)
-        stdout.file.close()
-        stderr.file.close()
-        return text
+        return response(outcome="ok" if evidence["exit_code"] == 0 else "execution_error",
+            **evidence, manifest=manifest, files=changed)
     except Exception:
-        return response(outcome="snapshot_error", stderr="Managed restoration or retained "
-            "snapshot failed; browser files remain unacknowledged")
+        pending_evidence = (state.get("execution", {}) if state
+            and state.get("head") == cfg["operation_id"] else {})
+        return response(outcome="snapshot_error",
+            **(evidence or pending_evidence))
     finally:
         bi.__import__ = old_import
         try:
@@ -315,12 +338,14 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
         raise SaverError("Captured output exceeds configured text limit")
     if value.version != 2 or value.operation_id != operation_id or value.nonce != nonce:
         raise SaverError("Workspace callback binding is invalid")
-    if value.outcome not in {"ok", "execution_error"}:
+    if value.outcome not in {"ok", "execution_error", "snapshot_error"}:
         raise BrowserFailure(
             "Browser workspace is busy"
             if value.outcome == "busy"
             else "Browser retained snapshot failed",
-            "browser_busy" if value.outcome == "busy" else "browser_snapshot_failed",
-            value.phase if value.phase in {"prepare", "restore", "execute"} else "unknown",
+            "browser_busy" if value.outcome == "busy" else "browser_recovery_unavailable",
+            value.phase
+            if value.phase in {"prepare", "restore", "execute", "recover"}
+            else "unknown",
         )
     return value

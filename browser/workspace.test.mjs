@@ -266,6 +266,111 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     assert.equal(legacy.outcome, "ok", legacy.stderr);
     assert(legacy.manifest.some((file) => file.path === "scripts/.runs"));
     assert(legacy.manifest.some((file) => file.path === "scripts/.runs-current/latest/source.py"));
+    const pending = {
+      operation_id: randomUUID(),
+      key: "pending",
+      head: "",
+      phase: "execute",
+      warm: false,
+      code: "from pathlib import Path\np=Path('scripts/count');p.write_text(str(int(p.read_text())+1) if p.exists() else '1')\nPath('outputs/large').write_bytes(bytes(32768))\nprint('completed before snapshot')",
+      language: "python",
+      cwd: ".",
+      restore: [],
+      baseline: [],
+      legacy_paths: [],
+      inputs: [],
+      blocked_modules: [],
+      limits: {
+        max_files: 64,
+        max_file_bytes: 16384,
+        max_total_bytes: 8 * 1024 * 1024,
+        max_envelope_bytes: 15 * 1024 * 1024,
+        max_text_bytes: 16384,
+        callback_timeout_seconds: 55,
+      },
+    };
+    const oversized = await run(pending);
+    assert.equal(oversized.outcome, "snapshot_error");
+    assert.equal(oversized.execution_completed, true);
+    assert.equal(oversized.exit_code, 0);
+    assert.equal(oversized.stdout.trim(), "completed before snapshot");
+    const recovered = await run({
+      ...pending,
+      phase: "recover",
+      code: "raise Exception('never run')",
+      limits: { ...pending.limits, max_file_bytes: 65536 },
+    });
+    assert.equal(recovered.outcome, "ok");
+    assert.equal(recovered.stdout, oversized.stdout);
+    assert.equal(
+      Buffer.from(
+        recovered.files.find((file) => file.path === "scripts/count").data,
+        "base64",
+      ).toString(),
+      "1",
+    );
+    assert.deepEqual(await start(), { ready: true, absent: true });
+    const lost = await run({ ...pending, phase: "recover" });
+    assert.equal(lost.outcome, "recovery_unavailable");
+    const metadataFailure = await run({
+      ...pending,
+      operation_id: randomUUID(),
+      key: "metadata",
+      code: "import importlib.metadata\nprint('completion before metadata')\nimportlib.metadata.distributions=lambda: (_ for _ in ()).throw(RuntimeError('synthetic inventory failure'))",
+    });
+    assert.equal(metadataFailure.outcome, "snapshot_error");
+    assert.equal(metadataFailure.execution_completed, true);
+    assert.equal(metadataFailure.stdout.trim(), "completion before metadata");
+    // Reset the deliberately altered interpreter before the next independent case.
+    assert.deepEqual(await start(), { ready: true, absent: true });
+    const clean = await run({
+      ...pending,
+      operation_id: randomUUID(),
+      key: "evidence",
+      code: "print('old evidence')",
+    });
+    assert.equal(clean.outcome, "ok");
+    const preparedOperation = randomUUID();
+    const prepared = await run({
+      ...pending,
+      operation_id: preparedOperation,
+      key: "evidence",
+      head: clean.operation_id,
+      phase: "prepare",
+    });
+    assert.equal(prepared.warm, true);
+    const advanced = await run({
+      ...pending,
+      operation_id: randomUUID(),
+      key: "evidence",
+      head: clean.operation_id,
+      warm: true,
+      code: "print('another operation completed')",
+    });
+    assert.equal(advanced.outcome, "ok");
+    const stalePreparation = await run({
+      ...pending,
+      operation_id: preparedOperation,
+      key: "evidence",
+      head: clean.operation_id,
+      warm: prepared.warm,
+      code: "print('never run')",
+    });
+    assert.equal(stalePreparation.outcome, "snapshot_error");
+    assert.equal(stalePreparation.execution_completed, undefined);
+    assert.equal(stalePreparation.stdout, undefined);
+    const beforeExecution = await run({
+      ...pending,
+      operation_id: randomUUID(),
+      key: "evidence",
+      head: advanced.operation_id,
+      warm: true,
+      cwd: "missing",
+      code: "print('never run')",
+    });
+    assert.equal(beforeExecution.outcome, "snapshot_error");
+    assert.equal(beforeExecution.execution_completed, undefined);
+    assert.equal(beforeExecution.stdout, undefined);
   } finally {
     await browser?.close();
     await new Promise((resolve) => server.close(resolve));

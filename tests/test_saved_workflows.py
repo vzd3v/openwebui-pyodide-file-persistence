@@ -399,7 +399,19 @@ def test_file_row_and_receipt_commit_marker_roll_back_together(
             assert len(await host.file_ids()) == 1 and len(host.provider.uploads) == 2
             retry = await host.call(action="retry", operation_id=receipt.operation_id)
             assert retry["incomplete"] is True and browser.calls == 1
-            assert len(host.provider.uploads) == 2
+            # Retry can reconstruct the manifest from committed blobs; the
+            # synthetic DB rejection still rolls back its File and receipt.
+            assert len(host.provider.uploads) == 3 and len(await host.file_ids()) == 1
+            async with host.engine.begin() as connection:
+                command = "DROP TRIGGER synthetic_receipt_failure"
+                if database_case.schema:
+                    command += f' ON "{database_case.schema}".pyodide_file_saver_operation'
+                await connection.execute(text(command))
+            recovered = await host.call(action="retry", operation_id=receipt.operation_id)
+            assert recovered["state"] == "published" and browser.calls == 1
+            assert len(await host.file_ids()) == 2 and len(host.provider.uploads) == 4
+            complete = await adapter.state.get(host.context, receipt.operation_id)
+            assert complete.blobs == receipt.blobs
 
     asyncio.run(scenario())
 

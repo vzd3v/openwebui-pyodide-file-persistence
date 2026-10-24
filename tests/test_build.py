@@ -62,7 +62,7 @@ def test_bundled_tool_loads_and_exposes_concrete_valve_schema(
     assert Limits.model_validate(persisted).max_file_bytes == 4194304
 
 
-@pytest.mark.parametrize("field", list(Tools.Valves.model_fields))
+@pytest.mark.parametrize("field", list(Limits.model_fields))
 @pytest.mark.parametrize(
     "value", [True, False, 1.0, 1.5, "1.0", "1e3", "1_000", "true", "", " 1", "1 ", "++1", "١"]
 )

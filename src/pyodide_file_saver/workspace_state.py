@@ -9,6 +9,7 @@ from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Column,
     Connection,
@@ -18,16 +19,28 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    func,
+    or_,
     select,
     text,
     update,
 )
+from sqlalchemy import cast as sql_cast
 from sqlalchemy import inspect as inspect_sqlalchemy
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
-from .contracts import SCHEMA_VERSION, BoundContext, FileSlot, Receipt, SaverError
+from .contracts import (
+    SCHEMA_VERSION,
+    BoundContext,
+    ExecutionBlocked,
+    FileSlot,
+    OperationDiagnostics,
+    Receipt,
+    SaverError,
+)
 
 
 class WorkspaceState:
@@ -63,6 +76,22 @@ class WorkspaceState:
             Column("updated_at", BigInteger, nullable=False),
             Index("pyodide_file_saver_actor_chat_idx", "actor_id", "chat_id"),
         )
+        # Additive Tool-owned tables only; never alter host tables or old receipts.
+        self.diagnostic = Table(
+            "pyodide_file_saver_diagnostic",
+            self.metadata,
+            Column("operation_id", String, primary_key=True),
+            Column("diagnostic_json", Text, nullable=False),
+            Column("active", Integer, nullable=False),
+        )
+        self.gate = Table(
+            "pyodide_file_saver_gate",
+            self.metadata,
+            Column("actor_id", String, primary_key=True),
+            Column("scope_key", String, primary_key=True),
+            Column("chat_id", String, nullable=False),
+            Column("operation_id", String, nullable=False),
+        )
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AsyncSession]:
@@ -97,7 +126,7 @@ class WorkspaceState:
 
     def _validate_shape(self, connection: Connection) -> None:
         inspector = inspect_sqlalchemy(connection)
-        for table in (self.workspace, self.operation):
+        for table in self.metadata.sorted_tables:
             columns = inspector.get_columns(table.name, schema=self.metadata.schema)
             by_name = {column["name"]: column for column in columns}
             if set(by_name) != set(table.columns.keys()):
@@ -155,7 +184,11 @@ class WorkspaceState:
                 raise SaverError("Incompatible existing Tool indexes")
 
     async def allocate(
-        self, context: BoundContext, language: Literal["python", "bash"] = "python"
+        self,
+        context: BoundContext,
+        language: Literal["python", "bash"] = "python",
+        *,
+        diagnostics: OperationDiagnostics | None = None,
     ) -> tuple[Receipt, Receipt | None]:
         operation_id = str(uuid4())
         async with self.transaction() as session:
@@ -201,6 +234,48 @@ class WorkspaceState:
             )
             if row["schema_version"] != SCHEMA_VERSION:
                 raise SaverError("Unsupported workspace schema version")
+            if diagnostics is not None:
+                for key in (diagnostics.request_key, diagnostics.session_key):
+                    if not key:
+                        continue
+                    gate = (
+                        (
+                            await session.execute(
+                                select(self.gate).where(
+                                    self.gate.c.actor_id == context.actor_id,
+                                    self.gate.c.scope_key == key,
+                                )
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if gate:
+                        raise ExecutionBlocked(
+                            str(gate["operation_id"]) if gate["chat_id"] == context.chat_id else "",
+                            "execution_request_blocked"
+                            if key == diagnostics.request_key
+                            else "execution_session_blocked",
+                        )
+                for pending, diagnostic in await self._unfinished(session, context):
+                    if diagnostic.dispatch in {"possibly_running", "outcome_unknown"} or (
+                        diagnostic.phase == "allocated" or not diagnostic.failure_code
+                    ):
+                        raise ExecutionBlocked(pending.operation_id, "execution_unresolved")
+                _, _, unsaved = self._receipt_candidates()
+                pending_id = await session.scalar(
+                    select(self.operation.c.operation_id)
+                    .where(
+                        self.operation.c.actor_id == context.actor_id,
+                        self.operation.c.chat_id == context.chat_id,
+                        self.operation.c.base_revision >= int(row["revision"]),
+                        unsaved,
+                    )
+                    .order_by(self.operation.c.created_at, self.operation.c.operation_id)
+                    .limit(1)
+                )
+                if pending_id:
+                    raise ExecutionBlocked(str(pending_id), "execution_recovery_required")
             head_id = row["head_operation_id"]
             if int(row["revision"]) < 0 or (head_id is None) != (row["revision"] == 0):
                 raise SaverError("Workspace head/revision state is inconsistent")
@@ -235,7 +310,219 @@ class WorkspaceState:
                     updated_at=now,
                 )
             )
+            if diagnostics is not None:
+                await session.execute(
+                    self.diagnostic.insert().values(
+                        operation_id=operation_id,
+                        diagnostic_json=diagnostics.model_dump_json(),
+                        active=1,
+                    )
+                )
             return receipt, head
+
+    async def record_refusal(
+        self, context: BoundContext, diagnostics: OperationDiagnostics, operation_id: str
+    ) -> bool:
+        """Commit one warning per request after the refused allocation rolled back."""
+        if not diagnostics.request_key:
+            raise SaverError("A bound request is required for refusal recording")
+        constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
+        async with self.transaction() as session:
+            inserted = await session.execute(
+                constructor(self.gate)
+                .values(
+                    actor_id=context.actor_id,
+                    scope_key=diagnostics.request_key,
+                    chat_id=context.chat_id,
+                    operation_id=operation_id,
+                )
+                .on_conflict_do_nothing(index_elements=["actor_id", "scope_key"])
+                .returning(self.gate.c.operation_id)
+            )
+            return inserted.scalar_one_or_none() is not None
+
+    async def diagnostics(self, context: BoundContext, operation_id: str) -> OperationDiagnostics:
+        async with self.sessions() as session:
+            receipt = await self.load(session, operation_id, context)
+            return await self._diagnostics(session, receipt)
+
+    async def _diagnostics(self, session: AsyncSession, receipt: Receipt) -> OperationDiagnostics:
+        raw = await session.scalar(
+            select(self.diagnostic.c.diagnostic_json).where(
+                self.diagnostic.c.operation_id == receipt.operation_id
+            )
+        )
+        if isinstance(raw, str):
+            return OperationDiagnostics.model_validate_json(raw)
+        return OperationDiagnostics(
+            phase="legacy",
+            dispatch="completed_reported" if receipt.execution_completed else "outcome_unknown",
+        )
+
+    async def _unfinished(
+        self, session: AsyncSession, context: BoundContext
+    ) -> list[tuple[Receipt, OperationDiagnostics]]:
+        revision = await session.scalar(
+            select(self.workspace.c.revision).where(
+                self.workspace.c.actor_id == context.actor_id,
+                self.workspace.c.chat_id == context.chat_id,
+            )
+        )
+        incomplete, _, _ = self._receipt_candidates()
+        rows = (
+            await session.execute(
+                select(self.operation.c.receipt_json, self.diagnostic.c.diagnostic_json)
+                .select_from(
+                    self.operation.outerjoin(
+                        self.diagnostic,
+                        self.operation.c.operation_id == self.diagnostic.c.operation_id,
+                    )
+                )
+                .where(
+                    self.operation.c.actor_id == context.actor_id,
+                    self.operation.c.chat_id == context.chat_id,
+                    self.operation.c.base_revision >= (revision or 0),
+                    incomplete,
+                    or_(self.diagnostic.c.active == 1, self.diagnostic.c.operation_id.is_(None)),
+                )
+                .order_by(self.operation.c.created_at, self.operation.c.operation_id)
+                .limit(33)
+            )
+        ).all()
+        result: list[tuple[Receipt, OperationDiagnostics]] = []
+        for raw, diagnostic_json in rows:
+            receipt = Receipt.model_validate_json(str(raw))
+            if receipt.state == "allocated" and not receipt.execution_completed:
+                diagnostic = (
+                    OperationDiagnostics.model_validate_json(str(diagnostic_json))
+                    if diagnostic_json is not None
+                    else OperationDiagnostics(phase="legacy", dispatch="outcome_unknown")
+                )
+                result.append((receipt, diagnostic))
+        return result
+
+    def _receipt_candidates(
+        self,
+    ) -> tuple[ColumnElement[bool], ColumnElement[bool], ColumnElement[bool]]:
+        raw = self.operation.c.receipt_json
+        if self.engine.dialect.name == "sqlite":
+            state = func.json_extract(raw, "$.state")
+            completed = func.json_extract(raw, "$.execution_completed")
+            ok = func.json_extract(raw, "$.python_ok")
+        else:
+            data = sql_cast(raw, JSON)
+            state = data["state"].as_string()
+            completed = data["execution_completed"].as_boolean()
+            ok = data["python_ok"].as_boolean()
+        return (
+            (state == "allocated") & func.coalesce(completed, False).is_(False),
+            or_(
+                (state == "allocated") & completed.is_(True),
+                state == "saved",
+                (state == "accepted") & ok.is_(True),
+            ),
+            (state == "allocated") & completed.is_(True),
+        )
+
+    async def recoverable(self, context: BoundContext) -> list[Receipt]:
+        _, candidate, _ = self._receipt_candidates()
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(self.operation.c.receipt_json)
+                .where(
+                    self.operation.c.actor_id == context.actor_id,
+                    self.operation.c.chat_id == context.chat_id,
+                    candidate,
+                )
+                .order_by(self.operation.c.created_at.desc(), self.operation.c.operation_id.desc())
+                .limit(33)
+            )
+            return [Receipt.model_validate_json(str(raw)) for raw in rows]
+
+    async def unresolved(self, context: BoundContext) -> list[Receipt]:
+        async with self.sessions() as session:
+            return [
+                receipt
+                for receipt, diagnostic in await self._unfinished(session, context)
+                if diagnostic.dispatch != "not_dispatched" or not diagnostic.failure_code
+            ]
+
+    async def head(self, context: BoundContext) -> Receipt | None:
+        async with self.sessions() as session:
+            operation_id = await session.scalar(
+                select(self.workspace.c.head_operation_id).where(
+                    self.workspace.c.actor_id == context.actor_id,
+                    self.workspace.c.chat_id == context.chat_id,
+                )
+            )
+            return await self.load(session, str(operation_id), context) if operation_id else None
+
+    async def mark(
+        self,
+        context: BoundContext,
+        operation_id: str,
+        *,
+        phase: str | None = None,
+        dispatch: Literal[
+            "not_dispatched", "possibly_running", "completed_reported", "outcome_unknown"
+        ]
+        | None = None,
+        failure_code: str = "",
+        session_failed: bool = False,
+    ) -> OperationDiagnostics:
+        async with self.transaction() as session:
+            # Match allocation's lock order so it cannot observe the failure
+            # diagnostic after checking a not-yet-committed failure gate.
+            await session.execute(
+                select(self.workspace.c.actor_id)
+                .where(
+                    self.workspace.c.actor_id == context.actor_id,
+                    self.workspace.c.chat_id == context.chat_id,
+                )
+                .with_for_update()
+            )
+            receipt = await self.load(session, operation_id, context, lock=True)
+            diagnostic = await self._diagnostics(session, receipt)
+            if phase is not None:
+                diagnostic.phase = phase
+            if dispatch is not None:
+                diagnostic.dispatch = dispatch
+            if failure_code:
+                diagnostic.failure_code = failure_code
+            constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
+            active = int(
+                not receipt.execution_completed
+                and (diagnostic.dispatch != "not_dispatched" or not diagnostic.failure_code)
+            )
+            await session.execute(
+                constructor(self.diagnostic)
+                .values(
+                    operation_id=operation_id,
+                    diagnostic_json=diagnostic.model_dump_json(),
+                    active=active,
+                )
+                .on_conflict_do_update(
+                    index_elements=["operation_id"],
+                    set_={"diagnostic_json": diagnostic.model_dump_json(), "active": active},
+                )
+            )
+            if failure_code:
+                for key in (
+                    diagnostic.request_key,
+                    diagnostic.session_key if session_failed else "",
+                ):
+                    if key:
+                        await session.execute(
+                            constructor(self.gate)
+                            .values(
+                                actor_id=context.actor_id,
+                                scope_key=key,
+                                chat_id=context.chat_id,
+                                operation_id=operation_id,
+                            )
+                            .on_conflict_do_nothing(index_elements=["actor_id", "scope_key"])
+                        )
+            return diagnostic
 
     async def load(
         self,
@@ -294,6 +581,14 @@ class WorkspaceState:
 
     async def accept(self, context: BoundContext, operation_id: str) -> Receipt:
         async with self.transaction() as session:
+            await session.execute(
+                select(self.workspace.c.actor_id)
+                .where(
+                    self.workspace.c.actor_id == context.actor_id,
+                    self.workspace.c.chat_id == context.chat_id,
+                )
+                .with_for_update()
+            )
             receipt = await self.load(session, operation_id, context, lock=True)
             if receipt.state != "saved":
                 return receipt

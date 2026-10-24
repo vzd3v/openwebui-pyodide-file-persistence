@@ -11,7 +11,7 @@ behavior.
 
 ## Execution and saving
 
-1. Bind the call to live actor/chat records and allocate a durable operation.
+1. Bind live actor/chat/generation context; check durable gates before allocating.
 2. Check the browser's cached workspace against the acknowledged operation. Reuse
    it if warm; otherwise restore verified saved files sequentially.
 3. Execute the submitted source once. Python and shell read/write the same Pyodide
@@ -30,15 +30,27 @@ availability.
 
 ## Durable state
 
-Two SQLAlchemy Core tables use the existing host database:
+Four SQLAlchemy Core tables use the existing host database:
 
 - `pyodide_file_saver_workspace`: actor/chat revision and acknowledged operation.
 - `pyodide_file_saver_operation`: reserved File IDs, manifest metadata, operation
   states and bounded execution text.
+- `pyodide_file_saver_diagnostic`: dispatch phase, normalized failure and request scope.
+- `pyodide_file_saver_gate`: failed request and authenticated actor/session guards.
 
 Payloads live in the configured file storage. Host-owned tables and migrations
 are unchanged. Database schema version remains one; defaulted receipt fields
 support version-two manifests while preserving older receipts.
+
+Diagnostics and gates are additive tables; existing receipt JSON is unchanged.
+Workspace-row locking serializes guarded allocation and failure recording across
+workers. Unknown execution remains fenced across messages/reconnects without TTL.
+Completed uncheckpointed work has a separate persistence fence protecting its root.
+First refusal commits a request latch after allocation rollback; concurrent workers
+elect one warning, and later refusals can invoke optional native stopping.
+Candidate queries select unresolved work independently of recent history, with
+bounded returned metadata. Older uncertainty below the acknowledged revision
+cannot replace the head through CAS and remains historical private state.
 
 Only changed retained files receive new immutable blob IDs. Unchanged bytes reuse
 acknowledged IDs. All required blobs must commit before the manifest and head.
@@ -83,6 +95,12 @@ Each call has fresh globals. Run records capture source, cwd, runtime, available
 package lock, exit status and truncation flags. The head keeps the latest recipe;
 historical receipts retain immutable earlier blobs. Full logs remain transient.
 Errors and nonzero exits do not issue outputs.
+
+Completion streams are captured before snapshot/recipe work. `recover` snapshots
+only the current exact pending root after completion; it never runs source.
+Partially uploaded snapshots must match every reserved path/hash/size and reuse
+its immutable IDs. `retry` reconstructs a missing manifest only after all blobs
+are committed and verified. Both paths retain head CAS and current grants.
 
 ## Code map
 

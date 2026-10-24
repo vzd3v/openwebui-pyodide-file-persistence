@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
 
-from pydantic import JsonValue, ValidationError, field_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from .browser_execution import read_checkpoint
 from .contracts import (
     Action,
     BoundContext,
     BrowserFailure,
+    ExecutionBlocked,
     Limits,
     Receipt,
     SaverError,
+    WorkspaceInvocationStopped,
+    digest,
     download_url,
     json_text,
     markdown_link,
@@ -23,6 +27,7 @@ from .contracts import (
 )
 from .openwebui_adapter import OpenWebUIAdapter, require_string
 from .workspace_execution import execute_workspace, verify_manifest
+from .workspace_manifest import manifest_bytes, parse_manifest
 
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
 EventEmitter = Callable[[dict[str, JsonValue]], Awaitable[object]]
@@ -72,12 +77,27 @@ def receipt_diagnostics(receipt: Receipt) -> dict[str, JsonValue]:
     if not receipt.checkpoint.committed:
         result["workspace_context"] = (
             "The last acknowledged workspace head remains selected. "
-            "A subsequent execution can select a new browser root from it; "
-            "scratch and unacknowledged retained changes are not restored. "
             "The old browser root may still exist; no deletion or worker "
-            "termination is confirmed. Inspect it before starting a new execution."
+            "termination is confirmed. Use recover with this operation_id and no code "
+            "in the original live browser to checkpoint completed pending work. "
+            "Unknown execution blocks new programs in this workspace."
         )
     return result
+
+
+async def operation_summary(
+    adapter: OpenWebUIAdapter, context: BoundContext, receipt: Receipt, *, streams: bool = False
+) -> dict[str, JsonValue]:
+    diagnostic = await adapter.state.diagnostics(context, receipt.operation_id)
+    return {
+        **receipt_summary(receipt),
+        **(receipt_diagnostics(receipt) if streams else {}),
+        "phase": diagnostic.phase,
+        "dispatch": diagnostic.dispatch,
+        "failure_code": diagnostic.failure_code or None,
+        "request_scope": diagnostic.request_scope,
+        **({"retained_files": [slot.model_dump() for slot in receipt.blobs]} if streams else {}),
+    }
 
 
 async def resume_publication(
@@ -90,7 +110,31 @@ async def resume_publication(
 ) -> Receipt:
     receipt = await adapter.state.get(context, operation_id)
     if receipt.state == "allocated":
-        raise SaverError("No received checkpoint is committed; retry cannot rerun code")
+        if not (
+            receipt.execution_completed
+            and receipt.checkpoint_version == 2
+            and all(blob.committed for blob in receipt.blobs)
+        ):
+            raise SaverError(
+                "No complete committed blob set is available; recover requires the original "
+                "live browser, and retry never reruns code"
+            )
+        for blob in receipt.blobs:
+            await adapter.verify_slot(context, blob, limits.max_file_bytes)
+        for slot in receipt.inputs:
+            await adapter.authorize_file(context, slot.file_id)
+        checkpoint = manifest_bytes(receipt)
+        parse_manifest(checkpoint, receipt, limits)
+        if len(checkpoint) > limits.max_envelope_bytes:
+            raise SaverError("Retained manifest exceeds transport limit")
+        async with adapter.state.transaction() as session:
+            saved = await adapter.state.load(session, operation_id, context, lock=True)
+            if saved.state == "allocated":
+                saved.checkpoint.sha256, saved.checkpoint.size = digest(checkpoint), len(checkpoint)
+                await adapter.state.put(session, saved)
+        receipt = await adapter.store_slot(
+            context, operation_id, None, checkpoint, limits.max_envelope_bytes
+        )
     if receipt.checkpoint_version == 2:
         await verify_manifest(adapter, context, receipt, limits, read_blobs=read_blobs)
         files = []
@@ -170,6 +214,11 @@ class Tools:
     class Valves(Limits):
         """Conservative tunable transfer limits, always below stock transport ceilings."""
 
+        stop_on_browser_failure: bool = Field(
+            default=False,
+            description="Opt-in native cancellation; enable only after host acceptance tests.",
+        )
+
         @field_validator(
             "max_files",
             "max_file_bytes",
@@ -234,15 +283,22 @@ class Tools:
         acknowledgements, not current byte/grant availability; retry revalidates
         without rerunning code before returning links. A new 'execute' always
         runs a new program: never use it as an automatic retry.
+        Use action='recover' with the pending operation_id and no code to snapshot
+        completed work in the original live browser without rerunning source.
+        Unknown execution or completed work awaiting a checkpoint blocks new programs
+        even after reconnect or a new message. Lost browser bytes,
+        scratch, variables and packages cannot be restored. Keep essential intermediate
+        data in scripts/state/ and load permitted dependencies before running saved source.
 
         :param code: Python or shell source for execute; write issued documents in outputs/.
-        :param action: execute, retry or status.
+        :param action: execute, retry, recover or status.
         :param operation_id: Server-issued saved operation ID for retry or specific status.
         :param language: python or bash (browser just-bash; no native OS processes).
         """
         current_operation = ""
         adapter: OpenWebUIAdapter | None = None
         context: BoundContext | None = None
+        stop_ready = False
         try:
             call = Action.model_validate(
                 {
@@ -254,7 +310,9 @@ class Tools:
                 }
             )
             # Cached Tool instances carry configuration, never actor/workspace state.
-            limits = Limits.model_validate(self.valves.model_dump())
+            limits = Limits.model_validate(
+                self.valves.model_dump(exclude={"stop_on_browser_failure"})
+            )
             if __request__ is None or not __user__:
                 raise SaverError("Authenticated Open WebUI invocation context is required")
             adapter = OpenWebUIAdapter()
@@ -264,21 +322,45 @@ class Tools:
                 require_string(__message_id__),
             )
             await adapter.initialize()
+            await adapter.validate_generation(
+                context,
+                __metadata__ or {},
+                require_task=self.valves.stop_on_browser_failure
+                and call.action in {"execute", "recover"},
+            )
+            if self.valves.stop_on_browser_failure and call.action in {"execute", "recover"}:
+                adapter.require_stop_capability()
+                if __event_emitter__ is None:
+                    raise SaverError("Native cancellation requires the host event emitter")
+                stop_ready = True
             if call.action == "status":
                 receipts = (
                     [await adapter.state.get(context, call.operation_id)]
                     if call.operation_id
                     else await adapter.state.pending(context)
                 )
+                head = await adapter.state.head(context)
+                unresolved = await adapter.state.unresolved(context)
+                recoverable = await adapter.state.recoverable(context)
                 return json_text(
                     {
                         "operations": [
-                            {
-                                **receipt_summary(item),
-                                **(receipt_diagnostics(item) if call.operation_id else {}),
-                            }
+                            await operation_summary(
+                                adapter, context, item, streams=bool(call.operation_id)
+                            )
                             for item in receipts
                         ],
+                        "head": await operation_summary(adapter, context, head) if head else None,
+                        "unresolved": [
+                            await operation_summary(adapter, context, item)
+                            for item in unresolved[:32]
+                        ],
+                        "unresolved_truncated": len(unresolved) > 32,
+                        "recoverable": [
+                            await operation_summary(adapter, context, item)
+                            for item in recoverable[:32]
+                        ],
+                        "recoverable_truncated": len(recoverable) > 32,
                         "availability": "not_rechecked",
                         "instructions": (
                             "Receipts record past acknowledgements, not current availability. "
@@ -295,7 +377,23 @@ class Tools:
                 if __event_call__ is None:
                     raise SaverError("A connected browser session is required for execution")
                 blocked_modules = await adapter.execution_policy()
-                receipt, head = await adapter.state.allocate(context, call.language)
+                if call.action == "recover":
+                    current_operation = call.operation_id
+                    receipt = await adapter.state.get(context, call.operation_id)
+                    if receipt.state != "allocated":
+                        raise SaverError("Use retry to verify reserved or committed saved bytes")
+                    call = call.model_copy(update={"language": receipt.language})
+                    head = (
+                        await adapter.state.get(context, receipt.base_operation_id)
+                        if receipt.base_operation_id
+                        else None
+                    )
+                else:
+                    receipt, head = await adapter.state.allocate(
+                        context,
+                        call.language,
+                        diagnostics=adapter.invocation_diagnostics(context, __metadata__ or {}),
+                    )
                 current_operation = receipt.operation_id
                 receipt = await execute_workspace(
                     adapter,
@@ -308,11 +406,13 @@ class Tools:
                     __event_call__,
                     blocked_modules,
                     (__metadata__ or {}).get("session_id"),
+                    recovering=call.action == "recover",
                 )
                 receipt = await resume_publication(
                     adapter, context, receipt.operation_id, limits, read_blobs=False
                 )
             result = final_result(receipt)
+            result.update(await operation_summary(adapter, context, receipt))
             if receipt.state == "published" and __event_emitter__:
                 try:
                     await __event_emitter__(
@@ -345,7 +445,39 @@ class Tools:
                 )
             )
             return json_text(result)
+        except WorkspaceInvocationStopped:
+            raise
+        except asyncio.CancelledError:
+            # The caller's cancellation is distinct from a callback timeout. Do
+            # not turn it into an ordinary result or assert worker termination.
+            if adapter and context and current_operation:
+                try:
+                    async with asyncio.timeout(3):
+                        diagnostic = await adapter.state.diagnostics(context, current_operation)
+                        await adapter.state.mark(
+                            context,
+                            current_operation,
+                            failure_code="invocation_cancelled",
+                            dispatch="outcome_unknown"
+                            if diagnostic.dispatch == "possibly_running"
+                            else None,
+                        )
+                except Exception:
+                    SAVER_LOG.warning("Cancellation diagnostic persistence failed")
+            raise
         except Exception as error:
+            first_refusal = False
+            if isinstance(error, ExecutionBlocked):
+                current_operation = error.operation_id
+                if adapter and context:
+                    try:
+                        first_refusal = await adapter.state.record_refusal(
+                            context,
+                            adapter.invocation_diagnostics(context, __metadata__ or {}),
+                            current_operation,
+                        )
+                    except Exception:
+                        SAVER_LOG.warning("Request refusal persistence failed")
             if isinstance(error, SaverError):
                 detail = str(error)
             elif isinstance(error, ValidationError):
@@ -363,12 +495,33 @@ class Tools:
             }
             if isinstance(error, SaverError) and error.error_code:
                 result["error_code"] = error.error_code
+            if isinstance(error, ExecutionBlocked):
+                result["first_refusal"] = first_refusal
+                result["recovery"] = (
+                    "Execution was refused without allocating or dispatching a new operation. "
+                    "Use status, retry or recover with the existing operation_id and no code. "
+                    "Do not submit another execute in this request."
+                )
             if isinstance(error, BrowserFailure):
                 result["phase"] = error.phase
             if adapter and context and current_operation:
                 try:
+                    if not isinstance(error, ExecutionBlocked):
+                        diagnostic = await adapter.state.diagnostics(context, current_operation)
+                        await adapter.state.mark(
+                            context,
+                            current_operation,
+                            dispatch="outcome_unknown"
+                            if diagnostic.dispatch == "possibly_running"
+                            else None,
+                            failure_code=(error.error_code or "host_operation_failed")
+                            if isinstance(error, SaverError)
+                            else "host_operation_failed",
+                            session_failed=isinstance(error, BrowserFailure)
+                            and error.error_code in {"session_unavailable", "session_disconnected"},
+                        )
                     receipt = await adapter.state.get(context, current_operation)
-                    result["receipt"] = receipt_summary(receipt)
+                    result["receipt"] = await operation_summary(adapter, context, receipt)
                     result.update(receipt_diagnostics(receipt))
                 except Exception:
                     result["receipt_unavailable"] = True
@@ -388,4 +541,44 @@ class Tools:
                     }
                 )
             )
+            if (
+                stop_ready
+                and adapter
+                and context
+                and (
+                    isinstance(error, BrowserFailure)
+                    or (isinstance(error, ExecutionBlocked) and not first_refusal)
+                )
+            ):
+                diagnostic = {
+                    "operation_id": current_operation,
+                    "error_code": error.error_code,
+                    "receipt": result.get("receipt"),
+                }
+                try:
+                    async with asyncio.timeout(3):
+                        native_error = await adapter.persist_stop(
+                            context, __metadata__ or {}, diagnostic
+                        )
+                        if __event_emitter__:
+                            await __event_emitter__(
+                                {
+                                    "type": "status",
+                                    "data": {
+                                        "description": native_error["content"],
+                                        "done": True,
+                                    },
+                                }
+                            )
+                            await __event_emitter__(
+                                {
+                                    "type": "chat:completion",
+                                    "data": {
+                                        "error": native_error,
+                                    },
+                                }
+                            )
+                except Exception:
+                    SAVER_LOG.warning("Native cancellation presentation failed")
+                raise WorkspaceInvocationStopped() from None
             return json_text(result)

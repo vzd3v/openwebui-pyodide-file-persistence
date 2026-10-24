@@ -124,7 +124,9 @@ def test_authorized_empty_input_uses_origin_receipt_across_actor_workspaces(
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
-            saved = await host.call(BrowserReply([FileBytes("outputs/empty.txt", b"")]))
+            saved = await host.call(
+                BrowserReply([FileBytes("outputs/empty.txt", b"")]),
+            )
             operation_id = saved["operation_id"]
             assert isinstance(operation_id, str)
             adapter = OpenWebUIAdapter()
@@ -179,7 +181,11 @@ def test_unsupported_empty_lifecycle_fails_before_creating_a_native_empty_file(
             assert "issued_files" not in result and not await host.file_ids()
             # The limitation concerns creation, not previously saved empty File reads.
             monkeypatch.setattr(module, "STORAGE_PROVIDER", "local", raising=False)
-            saved = await host.call(BrowserReply([FileBytes("outputs/empty.txt", b"")]))
+            saved = await host.call(
+                BrowserReply([FileBytes("outputs/empty.txt", b"")]),
+                action="recover",
+                operation_id=str(result["operation_id"]),
+            )
             assert saved["state"] == "published", saved
             operation_id = saved["operation_id"]
             assert isinstance(operation_id, str)

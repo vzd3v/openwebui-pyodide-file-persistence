@@ -10,7 +10,7 @@ from pydantic import JsonValue
 
 from .browser_asset import shell_asset
 from .browser_execution import read_checkpoint
-from .browser_workspace import workspace_reply, workspace_wrapper
+from .browser_workspace import WorkspaceReply, workspace_reply, workspace_wrapper
 from .contracts import (
     JSON_VALUE,
     Action,
@@ -67,12 +67,7 @@ async def browser_call(
             "browser_callback_timeout",
             phase,
         ) from error
-    # Native callers may return a dict subclass with a reason attribute. Read it
-    # before JSON normalization, but expose only known content-free reason codes.
-    reason = getattr(raw, "reason", None)
-    reasons = {"session_unavailable", "session_mismatch", "session_disconnected"}
-    if isinstance(reason, str) and reason in reasons:
-        raise BrowserFailure("Browser session is unavailable", reason, phase)
+    OpenWebUIAdapter.classify_callback(raw, phase)
     parsed = JSON_VALUE.validate_python(raw)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), str):
         code = parsed.get("error_code") if isinstance(parsed, dict) else None
@@ -114,6 +109,8 @@ async def execute_workspace(
     event_call: Callable[[dict[str, JsonValue]], Awaitable[object]],
     blocked_modules: list[str],
     session_id: JsonValue = None,
+    *,
+    recovering: bool = False,
 ) -> Receipt:
     config: dict[str, JsonValue] = {
         "operation_id": receipt.operation_id,
@@ -124,10 +121,14 @@ async def execute_workspace(
         "restore": [],
         "limits": limits.model_dump(),
     }
-    raw, nonce = await browser_call(event_call, config, limits, session_id)
-    prepared = workspace_reply(raw, receipt.operation_id, nonce, limits)
-    if prepared.phase != "prepare":
-        raise SaverError("Invalid browser prepare phase")
+    if not recovering:
+        await adapter.state.mark(context, receipt.operation_id, phase="prepare")
+        raw, nonce = await browser_call(event_call, config, limits, session_id)
+        prepared = workspace_reply(raw, receipt.operation_id, nonce, limits)
+        if prepared.phase != "prepare":
+            raise SaverError("Invalid browser prepare phase")
+    else:
+        prepared = WorkspaceReply(operation_id=receipt.operation_id, nonce="", phase="prepare")
     restore: list[FileBytes] = []
     legacy: list[str] = []
     inherited: list[FileSlot] = []
@@ -158,9 +159,14 @@ async def execute_workspace(
         if path.startswith("inputs/") and len(path.split("/")) > 2
     }
     active_attachments = [item for item in attachments if item.get("id") not in legacy_input_ids]
-    inputs, fresh_inputs = await adapter.referenced_inputs(
-        context, active_attachments, previous_inputs, limits
-    )
+    if recovering:
+        inputs, fresh_inputs = receipt.inputs, set[str]()
+        for slot in inputs:
+            await adapter.authorize_file(context, slot.file_id)
+    else:
+        inputs, fresh_inputs = await adapter.referenced_inputs(
+            context, active_attachments, previous_inputs, limits
+        )
     additions = JSON_VALUE.validate_python(
         {
             "phase": "execute",
@@ -183,6 +189,7 @@ async def execute_workspace(
     config.update(additions)
 
     async def send_restore(file: FileBytes) -> None:
+        await adapter.state.mark(context, receipt.operation_id, phase="restore")
         config["phase"], config["restore"] = (
             "restore",
             JSON_VALUE.validate_python(encode_files([file])),
@@ -196,23 +203,65 @@ async def execute_workspace(
 
     asset = config["shell_asset"]
     config["shell_asset"] = ""
-    if not prepared.warm:
+    if not recovering and not prepared.warm:
         for slot in inherited:
             data = await adapter.verify_slot(context, slot, limits.max_file_bytes)
             await send_restore(FileBytes(slot.path, data))
         for file in restore:
             await send_restore(file)
-    for slot in inputs:
+    for slot in inputs if not recovering else []:
         if not prepared.warm or slot.path in fresh_inputs:
             data = await adapter.read_file(context, slot.file_id, limits.max_file_bytes)
             if len(data) != slot.size or digest(data) != slot.sha256:
                 raise SaverError("Native input no longer matches its saved reference")
             await send_restore(FileBytes(slot.path, data))
-    config["phase"], config["restore"], config["shell_asset"] = "execute", [], asset
+    config["phase"], config["restore"], config["shell_asset"] = (
+        "recover" if recovering else "execute",
+        [],
+        asset,
+    )
+    if recovering:
+        config["inputs"] = JSON_VALUE.validate_python(
+            [item.model_dump() for item in receipt.inputs]
+        )
+        config["legacy_paths"] = list(receipt.legacy_paths)
+    else:
+        # Persist restore identity before dispatch; recovery never guesses inputs.
+        async with adapter.state.transaction() as session:
+            saved = await adapter.state.load(session, receipt.operation_id, context, lock=True)
+            saved.inputs, saved.legacy_paths = inputs, legacy
+            await adapter.state.put(session, saved)
+    await adapter.state.mark(
+        context,
+        receipt.operation_id,
+        phase="recover" if recovering else "execute",
+        dispatch="possibly_running" if not recovering else None,
+    )
     raw, nonce = await browser_call(event_call, config, limits, session_id)
     reply = workspace_reply(raw, receipt.operation_id, nonce, limits)
-    if reply.phase != "execute":
+    if reply.phase != ("recover" if recovering else "execute"):
         raise SaverError("Invalid browser execution phase")
+    if reply.execution_completed or reply.outcome in {"ok", "execution_error"}:
+        async with adapter.state.transaction() as session:
+            saved = await adapter.state.load(session, receipt.operation_id, context, lock=True)
+            saved.execution_completed, saved.python_ok = True, reply.exit_code == 0
+            saved.stdout, saved.stderr, saved.exit_code = (
+                reply.stdout,
+                reply.stderr,
+                reply.exit_code,
+            )
+            saved.stdout_truncated, saved.stderr_truncated = (
+                reply.stdout_truncated,
+                reply.stderr_truncated,
+            )
+            await adapter.state.put(session, saved)
+        await adapter.state.mark(
+            context, receipt.operation_id, phase="snapshot", dispatch="completed_reported"
+        )
+    if reply.outcome == "snapshot_error":
+        raise BrowserFailure(
+            "Browser retained snapshot failed", "browser_snapshot_failed", reply.phase
+        )
     changed = decode_files(reply.files, limits)
     changes = {item.path: item for item in changed}
     inherited_by_path = {slot.path: slot for slot in inherited}
@@ -222,9 +271,24 @@ async def execute_workspace(
         raise SaverError("Duplicate retained manifest path")
     blobs: list[FileSlot] = []
     uploads: dict[str, bytes] = {}
+    reserved = {slot.path: slot for slot in receipt.blobs} if recovering else {}
+    if recovering and receipt.checkpoint_version == 2 and manifests != receipt.files:
+        raise SaverError("Pending snapshot differs from the immutable reserved receipt")
     for item in manifests:
         safe_relative_path(item.path)
-        if item.path in changes:
+        if item.path in reserved:
+            slot = reserved[item.path]
+            if slot_entry(slot) != item:
+                raise SaverError("Pending bytes differ from the immutable reserved receipt")
+            if slot.committed:
+                await adapter.verify_slot(context, slot, limits.max_file_bytes)
+            else:
+                file = changes.get(item.path)
+                if file is None or file.manifest() != item:
+                    raise SaverError("Missing pending bytes for reserved retained blob")
+                uploads[item.path] = file.data
+            blobs.append(slot.model_copy(deep=True))
+        elif item.path in changes:
             file = changes[item.path]
             if file.manifest() != item:
                 raise SaverError("Changed bytes differ from retained manifest")
@@ -274,12 +338,15 @@ async def execute_workspace(
     )
     async with adapter.state.transaction() as session:
         saved = await adapter.state.load(session, receipt.operation_id, context, lock=True)
-        if saved.state != "allocated" or saved.execution_completed:
+        if saved.state != "allocated" or (saved.blobs and not recovering):
             raise SaverError("Operation already received execution data")
+        if recovering and saved.blobs != receipt.blobs:
+            raise SaverError("Operation changed during pending recovery; inspect status")
         saved.checkpoint_version, saved.blobs, saved.inputs = 2, blobs, inputs
         saved.legacy_paths, saved.files, saved.language = legacy, manifests, call.language
         saved.execution_completed, saved.python_ok = True, reply.outcome == "ok"
-        saved.browser_warm = prepared.warm
+        if not recovering:
+            saved.browser_warm = prepared.warm
         saved.exit_code = reply.exit_code
         saved.stdout, saved.stderr = reply.stdout, reply.stderr
         saved.stdout_truncated, saved.stderr_truncated = (
@@ -288,6 +355,9 @@ async def execute_workspace(
         )
         saved.outputs = [slot.model_copy(deep=True) for slot in blobs if slot.path in selected]
         await adapter.state.put(session, saved)
+    await adapter.state.mark(
+        context, receipt.operation_id, phase="storage", dispatch="completed_reported"
+    )
     for path, data in uploads.items():
         await adapter.store_slot(context, receipt.operation_id, path, data, limits.max_file_bytes)
     saved = await adapter.state.get(context, receipt.operation_id)

@@ -1,7 +1,7 @@
 # Install the Tool
 
 This guide is for an Open WebUI administrator. Installation adds one native Tool
-and two tables to the existing database. It does not require an execution server,
+and four tables to the existing database. It does not require an execution server,
 frontend patch or separate database.
 
 Check [compatibility](../dev/compatibility.md), then use the installation checks
@@ -11,7 +11,7 @@ below to verify downloads, sharing and recovery.
 
 - Open WebUI with the required native Tool contracts, native function calling,
   the Pyodide engine and a connected browser for new executions.
-- PostgreSQL or local-disk SQLite, with permission to create two tables. Replicas
+- PostgreSQL or local-disk SQLite, with permission to create four tables. Replicas
   must share the database. Separate per-replica databases and network-filesystem
   SQLite are unsupported.
 - Configured file storage. Empty retained files require native local storage.
@@ -43,7 +43,8 @@ see [Contributing](../../CONTRIBUTING.md).
 6. Review the limits below, then run the acceptance checks.
 
 On the first managed call, the Tool creates and validates
-`pyodide_file_saver_workspace` and `pyodide_file_saver_operation`. It does not
+`pyodide_file_saver_workspace`, `pyodide_file_saver_operation`,
+`pyodide_file_saver_diagnostic` and `pyodide_file_saver_gate`. It does not
 change Open WebUI's own table definitions or migrations. Missing permissions or
 incompatible state produce an error; the Tool never drops data to repair them.
 
@@ -78,6 +79,7 @@ subject to host policy. They are not per-user `UserValves`.
 | `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
 | `max_text_bytes` | 16 KiB per stdout/stderr stream |
 | `callback_timeout_seconds` | 55 seconds |
+| `stop_on_browser_failure` | `false`; separately qualified native cancellation |
 
 JSON/base64 overhead counts toward the serialized limit. Host upload/provider
 policies can lower effective limits. Decoded byte limits do not bypass them.
@@ -86,9 +88,30 @@ they are not a browser-memory or provider-capacity promise. Cold restoration sen
 files sequentially without chunking. Scratch uses browser memory separately.
 
 Source updates do not replace explicitly saved Valve values. Review them when
-upgrading. The settings boundary accepts decimal integer strings from the native
-UI; fractions, exponent notation, booleans, unknown fields and out-of-range values
-are rejected. Each field's description states its units.
+upgrading. Integer settings accept decimal integer strings from the native UI;
+fractions, exponent notation, booleans and out-of-range values are rejected.
+The stopping setting requires an actual boolean. Unknown fields are rejected.
+Each field's description states its units.
+
+## Native response stopping
+
+Durable request/session gates always prevent repeated dispatch and receipt growth
+after failure. They do not bound model-token consumption. Configure a finite
+native tool-iteration limit.
+
+`stop_on_browser_failure=true` opts into the inspected Open WebUI 0.12.3 native
+cancellation path: persist an assistant error/receipt reference, emit completion
+events and cancel the current server invocation. Unsupported versions or missing
+capabilities fail before browser dispatch. Host upgrades require requalification.
+Enabled stopping also requires a canonical injected task UUID matching the stored
+assistant generation before dispatch and under the native Chat row lock.
+This is not a stable documented Tool-stop extension API. Keep the default false
+until ordinary native calls and failure/recovery behavior pass acceptance on the
+exact host. Approval/resume and subagent contexts need separate qualification.
+
+Cancellation does not stop browser code. Host output not yet appended from other
+calls in the same batch can be lost; committed Tool receipts/Files remain
+discoverable through status/retry. See [limitations](../user/limitations.md).
 
 ## Missing Python packages
 

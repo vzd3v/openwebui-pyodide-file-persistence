@@ -5,11 +5,10 @@ shared chats, saved scripts and results, and shell file commands for the agent.*
 No additional execution server, per-user execution containers or Kubernetes
 cluster is required. Open WebUI stores selected files and controls access.
 
-**Up to 10× fewer tokens on file operations, as reported by the maintainer.**
 The agent can search with `rg`, edit with `sed`, filter JSON with `jq`, and copy
 or move files with `cp` and `mv`, instead of generating Python for each step.
 This also reduces time spent generating and debugging code. Savings depend on
-the task and model; no benchmark has been published.
+the task and model.
 
 The built-in Pyodide interpreter already creates files. But a user who clicks a
 broken link in the answer has to know to look in the sidebar's Files panel instead.
@@ -80,6 +79,7 @@ Default retained-file limits are 8 MiB per file and 8 MiB total. Scratch uses
 browser memory independently. Empty retained files require local storage.
 
 - [User guide](docs/user/guide.md): examples, saving and recovery
+- [Execution limits and recovery](docs/user/limitations.md): browser, dependencies and uncertain work
 - [Installation](docs/ops/install.md): settings, limits and removal
 - [Missing Python packages](docs/ops/pyodide-packages.md): optional administrator utility
 - [Security](SECURITY.md): access and trust boundaries
