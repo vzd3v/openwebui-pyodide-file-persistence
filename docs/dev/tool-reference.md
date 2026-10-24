@@ -7,17 +7,41 @@ For ordinary chat use, start with the [user guide](../user/guide.md).
 
 | Field | Values | Purpose |
 | --- | --- | --- |
-| `action` | `execute` (default), `retry`, `status` | Run a program, finish saved publication, or inspect operations |
-| `code` | Source text | Required for execution; must be empty for retry/status |
+| `action` | `execute` (default), `retry`, `recover`, `status` | Run, finish saving without rerunning, or inspect operations |
+| `code` | Source text | Required for execution; empty for other actions |
 | `language` | `python` (default), `bash` | Browser execution language |
-| `operation_id` | Server-issued ID | Required for retry; optional for status; absent for execution |
+| `operation_id` | Server-issued ID | Required for retry/recover; optional for status; absent for execution |
 
 Every new `execute` runs a new program. Never substitute it for a retry after an
 uncertain outcome. `status` without an ID lists recent operations without streams;
-with an ID it includes the accepted bounded stdout/stderr and actual execution
+with an ID it includes retained File metadata, accepted bounded stdout/stderr and actual execution
 outcome when available. Status never issues links and does not recheck old bytes
 or grants. `retry` revalidates saved bytes and access before finishing publication,
 without executing the program or recovering missing transfer bytes.
+
+Status returns the acknowledged `head`, up to 32 `unresolved` execution blockers,
+and up to 32 `recoverable` completed/saved operations independently of the recent
+ten; each bounded list has a truncation flag. `dispatch`, `phase`, `failure_code`
+and `request_scope` are durable diagnostics. Task scope uses a canonical injected
+server task UUID and validates any stored message task; absent task IDs use a
+conservative actor/chat/assistant-message gate. Session guards are actor-scoped;
+model arguments cannot reset them or reconnect an old request.
+
+Completed, uncheckpointed current-revision operations also fence new execution
+with `execution_recovery_required`; completion evidence stays truthful. A first
+fenced execute commits a request latch and returns `first_refusal=true` recovery
+JSON without a new operation. Further executes reuse that latch; optional native
+stopping may cancel them. Status/retry/recover do not consume or clear the latch.
+
+`recover` takes the current pending operation ID and no code. It requires that
+exact completed root in the original live browser. Partial uploads must match
+reserved bytes and retain immutable File IDs. `retry` can reconstruct a missing
+manifest from a complete verified committed blob set. Both use existing grants
+and revision CAS and never rerun user source. For manual new-chat recovery,
+owner/admin File downloads use the IDs in specific status with the native
+authenticated `/api/v1/files/{id}/content?attachment=true` route (empty Files use
+`/content/download?attachment=true`). Status metadata itself does not verify
+current bytes/access or grant access to another chat.
 
 The result includes an exit code and truncation flags when execution was accepted.
 `issued_files` includes each retained relative path, size, SHA-256 and Markdown
@@ -53,13 +77,14 @@ For example, one Python call can write shared data:
 
 ```python
 from pathlib import Path
-Path("scripts/data.json").write_text('{"values":[2,3,5]}')
+Path("scripts/state").mkdir(exist_ok=True)
+Path("scripts/state/data.json").write_text('{"values":[2,3,5]}')
 ```
 
 A following Bash call can read it and produce a downloadable result:
 
 ```sh
-jq -r '.values[]' scripts/data.json | awk '{sum += $1} END {print sum}' > outputs/sum.txt
+jq -r '.values[]' scripts/state/data.json | awk '{sum += $1} END {print sum}' > outputs/sum.txt
 ```
 
 ## Python and shell
@@ -105,18 +130,11 @@ chat attachments. Only issued output Files receive chat attachment grants.
 
 ## Failure and recovery
 
-| Situation | What is known | Safe next step |
-| --- | --- | --- |
-| Ordinary Python error or nonzero shell exit | Retained files are saved privately if storage succeeds; failed outputs are not published by a later unrelated success | Inspect the error, then submit corrected code as a new execution |
-| Execution accepted, later storage failure | Bounded stdout/stderr and actual exit status are available; saved workspace and links are not confirmed | Inspect status and retry the existing ID if the saved operation permits it |
-| No valid result, including callback timeout | Execution outcome and exit status are unknown | Inspect status; do not automatically execute again |
-| Manifest not fully committed | Operation is unacknowledged; the last acknowledged head remains selected | Preserve and inspect browser-local pending work; retry cannot recreate missing bytes |
-| Concurrent update conflict | Losing saved bytes stay private; acknowledged head is unchanged | Inspect both operations; no automatic branch selection occurs |
-
-A later execution may select a new root restored from the acknowledged head.
-Scratch and unacknowledged changes from the previous root are not guaranteed to
-appear there. The previous root is not automatically deleted. Browser closure or
-reload may lose pending work. A timeout does not prove worker termination.
+Use the [recovery matrix and limits](../user/limitations.md#if-execution-or-saving-fails).
+An ordinary program error saves retained files privately when storage succeeds;
+error-produced outputs are not published by a later unrelated success. A losing
+CAS checkpoint stays private. No operation automatically selects another branch,
+replays source or overwrites the acknowledged head.
 
 ## Empty files and older saved data
 

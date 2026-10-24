@@ -47,7 +47,7 @@ run the program again.
 | --- | --- | --- |
 | `inputs/` | Attachments you have permission to use | Referenced originals; access is checked on every call |
 | `work/` | Temporary data and full logs | No |
-| `scripts/` | Programs to keep and rerun | Yes, privately |
+| `scripts/` | Programs, dependency recipes and essential intermediate data under `scripts/state/` | Yes, privately |
 | `outputs/` | Documents and results to download | Yes; new or changed files are linked after success |
 
 Python and shell see the same files. Each call starts at the workspace root, so
@@ -69,11 +69,6 @@ The agent can use `rg` to search, `sed` to edit, `jq` to select JSON, and `cp` o
 `mv` to organize files. These commands work on the same files as Python. Editing
 a Markdown document does not need a new Python program for every change.
 
-The maintainer reports up to 10× fewer tokens on file-operation tasks with
-shell commands and saved programs, with less time spent generating and debugging
-Python boilerplate. Savings depend on the task and model; no benchmark has been
-published.
-
 Ask the assistant to keep large intermediate results in `work/`, save the useful
 result and return a short summary. Rerun a saved program instead of rewriting it.
 
@@ -83,23 +78,10 @@ content through other tools, attachment processing or printed output.
 
 ## When something fails
 
-- **The program reports an error:** saved files may still have been preserved
-  privately. Outputs from the failed call do not become chat downloads. Ask the
-  assistant to inspect the error and correct the program.
-- **The program finished but saving failed:** its accepted output and exit status
-  remain available, but a saved workspace is not confirmed. Retry the existing
-  operation if possible; do not assume the files were published.
-- **The response was lost or timed out:** first ask for operation status. A timeout
-  does not prove execution stopped. Automatically running it again can duplicate work.
-- **Two calls conflict:** the losing saved operation stays private. The Tool does
-  not choose a replacement automatically.
-- **A file exceeds the limit:** ask for a smaller result or talk to the administrator.
-  The defaults are 8 MiB per retained file and 8 MiB total; scratch is separate.
-
-Before reloading the browser or starting another execution after a failed save,
-inspect pending work. Unsaved changes and scratch may be lost or left in an older
-browser workspace. See the [Tool reference](../dev/tool-reference.md#failure-and-recovery)
-for exact recovery behavior.
+Use the existing operation ID with `status`, `retry` or `recover` as appropriate;
+do not automatically rerun code. Read the
+[recovery matrix and browser limitations](limitations.md#if-execution-or-saving-fails)
+before reloading the tab or starting another program.
 
 ## Limits to expect
 

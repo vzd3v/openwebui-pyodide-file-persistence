@@ -11,7 +11,7 @@ host/provider before enabling the Tool for users.
 
 | Area | Required behavior |
 | --- | --- |
-| Database | Async SQLAlchemy engine and shared ORM metadata; PostgreSQL or local-disk SQLite; permission to create two Tool tables |
+| Database | Async SQLAlchemy engine and shared ORM metadata; PostgreSQL or local-disk SQLite; permission to create four Tool tables |
 | Host models | Compatible File, Chat, ChatFile and normalized ChatMessage fields, types and identities |
 | Authorization | Async user lookup, live chat-write checks, native file-access checks and genuine injected actor/chat/assistant/request context |
 | Storage | Compatible synchronous provider upload/read methods and normal authenticated download routes |
@@ -69,10 +69,34 @@ no frontend patch was added for this Tool.
 
 Empty-file deletion was checked separately with a manually created native File
 using the exact representation, not end to end on a Tool-issued empty File.
-Storage-failure diagnostics used synthetic callbacks and real databases. Native
-provider fault injection and a complete interruption matrix were not performed.
+For these a1/a2 records, storage-failure diagnostics used synthetic callbacks
+and real databases; native provider fault injection and a complete interruption
+matrix were not performed.
 These observations do not qualify S3, GCS or Azure, or establish runtime acceptance
 of the installer minimum 0.12.0.
+
+## 0.2.0a4 native qualification
+
+Artifact SHA-256
+`fb556bb227ff1a3d7e2cd25e35b27c5460fddac99af56a061c678bbee1a701f4`
+was checked through native browser calls on PostgreSQL-backed Open WebUI 0.12.3
+with local customizations and local storage. This was not a pristine upstream runtime.
+
+- Python/Bash, same-page continuation and fresh-browser restoration of saved state.
+- Explicit dependency recipes with packages genuinely absent in the fresh worker,
+  including `xlrd`; valid DOCX/XLSX byte hashes and unchanged office File ID reuse.
+- Snapshot-limit failure preserving received completion/stdout; the first refused
+  new execution allowed status, and another refusal stopped the response.
+- Recovery of the original completed bytes after an operator limit adjustment:
+  one operation, execution counter one, and no source replay.
+
+Earlier restricted probes and a prior candidate separately checked native user
+cancellation, late callbacks, sequential stopping and partial-provider-upload
+recovery. They are not exact-final-artifact acceptance. A supplemental two-tab
+probe encountered an API-read timeout and did not qualify that scenario.
+Native stop remains opt-in. These checks do not qualify pristine upstream runtime
+behavior, delegated tasks, approval/resume or preservation of other calls' results
+in the same host batch. See [limitations](../user/limitations.md).
 
 ## Version-sensitive integration
 
@@ -86,6 +110,17 @@ and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.
 Source inspection is not runtime acceptance for every host.
 
 ## Saved-data compatibility
+
+**0.2.0a4:** creates additive diagnostics/gate tables without changing existing
+receipt JSON, Files or head semantics. Earlier readers can still read those
+receipts but ignore the new execution safeguards; disable new execution before
+rolling back. Unknown legacy operations at the current revision remain fenced;
+older operations below an acknowledged head remain historical and cannot win CAS.
+
+Optional native response stopping is restricted to the inspected 0.12.3 contract
+and disabled by default. Ordinary native cancellation/UI behavior was observed on
+a 0.12.3 installation; pristine stock, same-batch output preservation,
+approval/resume and subagent paths are not qualified. Requalify host upgrades.
 
 **0.2.0a3:** every call starts at the workspace root. The model-facing `cwd`
 argument is removed; saved files, paths and receipts require no migration.

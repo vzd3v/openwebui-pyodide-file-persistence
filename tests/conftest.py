@@ -191,7 +191,7 @@ class BrowserReply:
             "result": json_text(
                 {
                     "version": 2,
-                    "phase": "execute",
+                    "phase": config.get("phase", "execute"),
                     "manifest": [file.manifest().model_dump() for file in self.files],
                     "exit_code": 0 if self.outcome == "ok" else 1,
                     "operation_id": data["id"],
@@ -264,6 +264,7 @@ class HostHarness:
             Column("role", String),
             Column("content", String),
             Column("output", JSON),
+            Column("error", JSON),
             Column("files", JSON),
             Column("updated_at", Integer),
         )
@@ -377,6 +378,7 @@ class HostHarness:
         context: BoundContext | None = None,
         files: list[dict[str, JsonValue]] | None = None,
         tool: Tools | None = None,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> dict[str, JsonValue]:
         context = context or self.context
         result = JSON_VALUE.validate_json(
@@ -388,6 +390,7 @@ class HostHarness:
                 __chat_id__=context.chat_id,
                 __message_id__=context.message_id,
                 __request__=object(),
+                __metadata__=metadata,
                 __event_call__=browser,
                 __files__=files,
             )

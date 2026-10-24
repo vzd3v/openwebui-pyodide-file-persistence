@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -38,6 +39,34 @@ class BrowserFailure(SaverError):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
+
+
+class OperationDiagnostics(StrictModel):
+    """Separate from immutable receipt JSON so earlier saved data stays readable."""
+
+    phase: str = "allocated"
+    dispatch: Literal[
+        "not_dispatched", "possibly_running", "completed_reported", "outcome_unknown"
+    ] = "not_dispatched"
+    failure_code: str = ""
+    request_key: str = ""
+    session_key: str = ""
+    request_scope: Literal["task", "message"] = "message"
+
+
+class ExecutionBlocked(SaverError):
+    """A durable gate refused new work before receipt allocation."""
+
+    def __init__(self, operation_id: str, error_code: str):
+        super().__init__(
+            "Execution is blocked; inspect the existing operation without rerunning code",
+            error_code,
+        )
+        self.operation_id = operation_id
+
+
+class WorkspaceInvocationStopped(asyncio.CancelledError):
+    """Opt-in native cancellation, distinct from external caller cancellation."""
 
 
 class Limits(StrictModel):
@@ -95,7 +124,7 @@ class Limits(StrictModel):
 
 
 class Action(StrictModel):
-    action: Literal["execute", "retry", "status"] = "execute"
+    action: Literal["execute", "retry", "status", "recover"] = "execute"
     code: str = ""
     language: Literal["python", "bash"] = "python"
     cwd: str = "work"
@@ -106,8 +135,10 @@ class Action(StrictModel):
         if self.action == "execute":
             if not self.code.strip() or self.operation_id:
                 raise ValueError("execute requires code and no operation_id")
-        elif self.code or (self.action == "retry" and not self.operation_id):
-            raise ValueError("retry requires operation_id and no code; status accepts no code")
+        elif self.code or (self.action in {"retry", "recover"} and not self.operation_id):
+            raise ValueError(
+                "retry/recover require operation_id and no code; status accepts no code"
+            )
         if self.operation_id and not re.fullmatch(r"[0-9a-f-]{36}", self.operation_id):
             raise ValueError("invalid operation_id")
         if self.cwd != ".":

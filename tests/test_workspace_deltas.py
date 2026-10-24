@@ -207,7 +207,7 @@ def test_failed_delta_never_issues_or_advances_incomplete_head(
                 assert failed["stdout"] == "synthetic output"
                 assert failed["stderr"] == ""
                 assert failed["execution_outcome"] == "ok" and failed["exit_code"] == 0
-                assert "new browser root" in str(failed["workspace_context"])
+                assert "recover" in str(failed["workspace_context"])
             async with host.engine.connect() as connection:
                 assert list(await connection.scalars(select(host.chat_files.c.file_id))) == []
 

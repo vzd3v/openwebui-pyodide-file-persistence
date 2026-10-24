@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, Literal, Protocol, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 from sqlalchemy import JSON, Connection, Integer, MetaData, String, Table, select, update
@@ -22,8 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from .contracts import (
     JSON_VALUE,
     BoundContext,
+    BrowserFailure,
     FileSlot,
     Limits,
+    OperationDiagnostics,
     Receipt,
     SaverError,
     digest,
@@ -50,6 +52,17 @@ class HostChats(Protocol):
         *,
         permission: Literal["read", "write"] = "read",
         chat: object = None,
+    ) -> object: ...
+
+
+class HostMessageWriter(Protocol):
+    async def upsert_message(
+        self,
+        message_id: str,
+        chat_id: str,
+        user_id: str,
+        data: dict[str, JsonValue],
+        db: AsyncSession | None = None,
     ) -> object: ...
 
 
@@ -96,6 +109,133 @@ def require_string(value: object) -> str:
 
 
 class OpenWebUIAdapter:
+    @staticmethod
+    def task_id(metadata: dict[str, JsonValue]) -> str:
+        value = metadata.get("task_id")
+        if not isinstance(value, str):
+            return ""
+        try:
+            return value if str(UUID(value)) == value else ""
+        except ValueError:
+            return ""
+
+    @staticmethod
+    def invocation_diagnostics(
+        context: BoundContext, metadata: dict[str, JsonValue]
+    ) -> OperationDiagnostics:
+        # This input is injected by the host, never a model-facing Tool argument.
+        task = OpenWebUIAdapter.task_id(metadata)
+        session = metadata.get("session_id")
+        session = session if isinstance(session, str) and 0 < len(session) <= 256 else ""
+        request = ":".join((context.chat_id, context.message_id, task))
+        return OperationDiagnostics(
+            request_key="request:" + digest(request.encode()),
+            session_key="session:" + digest(session.encode()) if session else "",
+            request_scope="task" if task else "message",
+        )
+
+    @staticmethod
+    def classify_callback(raw: object, phase: str) -> None:
+        """Normalize known failure envelopes without attesting browser truth."""
+        reason = getattr(raw, "reason", None)
+        if isinstance(reason, str) and reason in {
+            "session_unavailable",
+            "session_mismatch",
+            "session_disconnected",
+            "event_timeout",
+        }:
+            raise BrowserFailure("Browser session is unavailable", reason, phase)
+        parsed = JSON_VALUE.validate_python(raw)
+        # Stock socket lifecycle failures have no workspace result. Match only the
+        # known host text, never relay arbitrary error text to the model/logs.
+        if isinstance(parsed, dict) and not isinstance(parsed.get("result"), str):
+            if parsed.get("error") == "Client session disconnected.":
+                raise BrowserFailure(
+                    "Browser session is unavailable", "session_disconnected", phase
+                )
+            if parsed.get("error") == (
+                "Event call timed out. The browser tab may be inactive or closed."
+            ):
+                raise BrowserFailure(
+                    "Browser callback timed out; worker termination is not confirmed",
+                    "browser_callback_timeout",
+                    phase,
+                )
+
+    def require_stop_capability(self) -> None:
+        if host_attribute("open_webui.env", "VERSION") != "0.12.3":
+            raise SaverError(
+                "Native cancellation is qualified only for Open WebUI 0.12.3; "
+                "disable stop_on_browser_failure until this host is qualified"
+            )
+        self._call(
+            host_attribute("open_webui.models.chat_messages", "ChatMessages"),
+            "upsert_message",
+            True,
+            "message",
+            "chat",
+            "actor",
+            {},
+            db=object(),
+        )
+
+    @staticmethod
+    def _validate_task(
+        message: dict[str, JsonValue], metadata: dict[str, JsonValue], *, require_task: bool = False
+    ) -> None:
+        meta = message.get("meta")
+        stored_task = meta.get("task_id") if isinstance(meta, dict) else None
+        injected_task = OpenWebUIAdapter.task_id(metadata)
+        if require_task and (not injected_task or not stored_task):
+            raise SaverError("Native cancellation requires a bound server task generation")
+        if stored_task and stored_task != injected_task:
+            raise SaverError("Injected generation differs from the live assistant message")
+
+    async def validate_generation(
+        self, context: BoundContext, metadata: dict[str, JsonValue], *, require_task: bool = False
+    ) -> None:
+        async with self.state.sessions() as session:
+            _, message = await self.validate_context(session, context)
+        self._validate_task(message, metadata, require_task=require_task)
+
+    async def persist_stop(
+        self,
+        context: BoundContext,
+        metadata: dict[str, JsonValue],
+        diagnostic: dict[str, JsonValue],
+    ) -> dict[str, JsonValue]:
+        error: dict[str, JsonValue] = {
+            "content": (
+                "Browser execution is unavailable. Inspect operation status before continuing."
+            ),
+            "type": "workspace_executor_unavailable",
+            "diagnostic": diagnostic,
+        }
+        async with self.state.transaction() as session:
+            # Same Chat row lock as the inspected native generation/merge path.
+            # Recheck the generation inside it; an earlier check is only admission.
+            chat, message = await self.validate_context(session, context, lock=True)
+            self._validate_task(message, metadata, require_task=True)
+            writer = cast(
+                HostMessageWriter, host_attribute("open_webui.models.chat_messages", "ChatMessages")
+            )
+            saved = await writer.upsert_message(
+                context.message_id, context.chat_id, context.actor_id, {"error": error}, db=session
+            )
+            if saved is None:
+                raise SaverError("Native assistant error could not be persisted")
+            message.update(error=error, workspace_diagnostic=diagnostic)
+            history = json_object(chat.get("history"))
+            messages = json_object(history.get("messages"))
+            messages[context.message_id] = message
+            history["messages"], chat["history"] = messages, history
+            await session.execute(
+                update(self.chats)
+                .where(self.chats.c.id == context.chat_id)
+                .values(chat=chat, updated_at=int(time.time()))
+            )
+        return error
+
     def __init__(self) -> None:
         engine = host_attribute("open_webui.internal.db", "async_engine")
         if not isinstance(engine, AsyncEngine):
