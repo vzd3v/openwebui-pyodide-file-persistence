@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    delete,
     func,
     or_,
     select,
@@ -345,6 +346,33 @@ class WorkspaceState:
         async with self.sessions() as session:
             receipt = await self.load(session, operation_id, context)
             return await self._diagnostics(session, receipt)
+
+    async def release_request_gate(
+        self, context: BoundContext, operation_id: str, request_key: str
+    ) -> None:
+        """Successful recovery permits this request to continue; dead sessions stay fenced."""
+        if not request_key:
+            return
+        async with self.transaction() as session:
+            await session.execute(
+                select(self.workspace.c.actor_id)
+                .where(
+                    self.workspace.c.actor_id == context.actor_id,
+                    self.workspace.c.chat_id == context.chat_id,
+                )
+                .with_for_update()
+            )
+            receipt = await self.load(session, operation_id, context, lock=True)
+            if receipt.state not in {"accepted", "published"} or not receipt.checkpoint.committed:
+                raise SaverError("Only acknowledged recovery can release a request gate")
+            await session.execute(
+                delete(self.gate).where(
+                    self.gate.c.actor_id == context.actor_id,
+                    self.gate.c.chat_id == context.chat_id,
+                    self.gate.c.operation_id == operation_id,
+                    self.gate.c.scope_key == request_key,
+                )
+            )
 
     async def _diagnostics(self, session: AsyncSession, receipt: Receipt) -> OperationDiagnostics:
         raw = await session.scalar(

@@ -201,8 +201,9 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                     .where(host.chats.c.id == host.context.chat_id)
                     .values(chat=chat)
                 )
-            with pytest.raises(WorkspaceInvocationStopped):
-                await tool.execute_code(
+
+            async def fail_browser() -> str:
+                return await tool.execute_code(
                     code="print('never dispatched')",
                     __user__={"id": host.context.actor_id},
                     __chat_id__=host.context.chat_id,
@@ -212,6 +213,16 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                     __event_call__=disconnected,
                     __event_emitter__=emitter,
                 )
+
+            # The first failure is actionable output, not whole-response cancellation.
+            first_failure = JSON_VALUE.validate_json(await fail_browser())
+            assert isinstance(first_failure, dict) and first_failure["incomplete"] is True
+            plan = first_failure["recovery_plan"]
+            assert isinstance(plan, dict) and plan["execution"] == "not_started"
+            assert not persisted and not emitted
+            # A repeated action in the failed request remains bounded.
+            with pytest.raises(WorkspaceInvocationStopped):
+                await fail_browser()
             assert len(persisted) == 1 and persisted[0]["error"]
             async with host.engine.connect() as connection:
                 row = (
@@ -416,7 +427,7 @@ def test_early_bash_failure_records_requested_language_and_unknown_outcome(
             receipt = result["receipt"]
             assert isinstance(receipt, dict)
             assert receipt["language"] == "bash" and receipt["exit_code"] is None
-            assert receipt["execution_outcome"] == "unknown"
+            assert receipt["execution_outcome"] == "not_started"
             assert receipt["browser_workspace"] == {
                 "mode": "unknown",
                 "base_operation_id": None,
@@ -435,7 +446,7 @@ class ErrorBrowser(BrowserReply):
         assert isinstance(raw, dict) and isinstance(raw["result"], str)
         result = JSON_VALUE.validate_json(raw["result"])
         assert isinstance(result, dict)
-        if result["phase"] == "execute":
+        if result["phase"] in {"execute", "snapshot", "recover"}:
             result.update(stderr="synthetic traceback", exit_code=7, stdout_truncated=True)
         return {"result": json_text(result)}
 

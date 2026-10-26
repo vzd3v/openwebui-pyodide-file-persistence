@@ -31,7 +31,10 @@ Completed, uncheckpointed current-revision operations also fence new execution
 with `execution_recovery_required`; completion evidence stays truthful. A first
 fenced execute commits a request latch and returns `first_refusal=true` recovery
 JSON without a new operation. Further executes reuse that latch; optional native
-stopping may cancel them. Status/retry/recover do not consume or clear the latch.
+stopping may cancel them. The first browser failure also returns guidance rather
+than stopping. Status and failed recovery leave the latch intact. Successful
+retry/recover releases only the current request latch for that acknowledged
+operation; it never clears a failed-session guard.
 
 `recover` takes the current pending operation ID and no code. It requires that
 exact completed root in the original live browser. Partial uploads must match
@@ -54,12 +57,20 @@ not promise that the worker is still alive or that scratch remains available.
 Callback failures include a content-free `error_code` and `phase` when available;
 raw host/provider errors are not returned.
 
+`recovery_plan` derives instructions from retained evidence. Its `execution` is
+`not_started` for a recorded pre-dispatch failure, `unknown` when execution might
+have started, or `completed` after a received completion acknowledgement. It lists
+applicable `tool_actions`, `next_step` and `needs_browser`. A pre-dispatch failure
+also sets `needs_new_request`: the old callback cannot switch browser sessions.
+Completion is persisted before a separate source-free snapshot callback. This
+does not make browser memory durable or establish completion when its reply is lost.
+
 ## Paths and input access
 
 Each call starts at the workspace root. There is no model-facing `cwd` argument.
 A program can change its own directory; that does not affect the next call.
 
-- `work/`: transient scratch and full stdout/stderr logs; not walked for retention.
+- `work/`: transient scratch and bounded stdout/stderr logs; not walked for retention.
 - `scripts/`: private retained source and run records.
 - `outputs/`: retained user results; only new/changed files from successful calls
   are published.
@@ -123,7 +134,8 @@ Private `scripts/.runs/latest/` records contain exact submitted source, cwd,
 runtime, post-run installed package versions, exit status and a `micropip.freeze()`
 lock when micropip is installed. Otherwise the lock is marked unavailable. The
 current workspace keeps the latest recipe; historical operation records keep
-immutable earlier blobs. Full stdout/stderr stay transient under `work/`.
+immutable earlier blobs. Transient stdout/stderr logs under `work/` share the
+per-stream `max_text_bytes` cap; excess text is discarded with truncation flags.
 
 Private checkpoints and run records are ordinary owner/admin-visible Files, not
 chat attachments. Only issued output Files receive chat attachment grants.

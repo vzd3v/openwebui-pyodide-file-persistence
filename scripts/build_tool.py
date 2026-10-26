@@ -17,6 +17,7 @@ MODULES = (
     "workspace_manifest",
     "openwebui_adapter",
     "workspace_execution",
+    "workspace_recovery",
     "tool",
 )
 ROOT = Path(__file__).resolve().parents[1]

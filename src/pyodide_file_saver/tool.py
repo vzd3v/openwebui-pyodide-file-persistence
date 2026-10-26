@@ -28,6 +28,7 @@ from .contracts import (
 from .openwebui_adapter import OpenWebUIAdapter, require_string
 from .workspace_execution import execute_workspace, verify_manifest
 from .workspace_manifest import manifest_bytes, parse_manifest
+from .workspace_recovery import recovery_plan
 
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
 EventEmitter = Callable[[dict[str, JsonValue]], Awaitable[object]]
@@ -78,9 +79,8 @@ def receipt_diagnostics(receipt: Receipt) -> dict[str, JsonValue]:
         result["workspace_context"] = (
             "The last acknowledged workspace head remains selected. "
             "The old browser root may still exist; no deletion or worker "
-            "termination is confirmed. Use recover with this operation_id and no code "
-            "in the original live browser to checkpoint completed pending work. "
-            "Unknown execution blocks new programs in this workspace."
+            "termination is confirmed. Status and recover do not rerun source. "
+            "Follow recovery_plan for this operation's recorded execution state."
         )
     return result
 
@@ -96,6 +96,14 @@ async def operation_summary(
         "dispatch": diagnostic.dispatch,
         "failure_code": diagnostic.failure_code or None,
         "request_scope": diagnostic.request_scope,
+        **(
+            {"execution_outcome": "not_started"}
+            if not receipt.execution_completed
+            and diagnostic.dispatch == "not_dispatched"
+            and diagnostic.failure_code
+            else {}
+        ),
+        "recovery_plan": recovery_plan(receipt, diagnostic),
         **({"retained_files": [slot.model_dump() for slot in receipt.blobs]} if streams else {}),
     }
 
@@ -216,7 +224,10 @@ class Tools:
 
         stop_on_browser_failure: bool = Field(
             default=False,
-            description="Opt-in native cancellation; enable only after host acceptance tests.",
+            description=(
+                "Stop repeated blocked browser actions after returning recovery guidance once. "
+                "Enable only after native host acceptance; the first failure is a Tool result."
+            ),
         )
 
         @field_validator(
@@ -271,7 +282,7 @@ class Tools:
         can retain installed packages, but a fresh browser does not reinstall them.
         Static Python imports provide host package-loading hints; dynamic import
         probes do not. Native subprocesses, threads and network shell commands are
-        unavailable. Full logs remain transient under work/;
+        unavailable. Bounded logs remain transient under work/;
         returned text is bounded with truncation flags and an exit code.
         Empty retained files require native local storage; remote providers do not
         support the native metadata-backed empty File lifecycle.
@@ -411,6 +422,12 @@ class Tools:
                 receipt = await resume_publication(
                     adapter, context, receipt.operation_id, limits, read_blobs=False
                 )
+            if call.action in {"retry", "recover"} and receipt.state in {"accepted", "published"}:
+                await adapter.state.release_request_gate(
+                    context,
+                    receipt.operation_id,
+                    adapter.invocation_diagnostics(context, __metadata__ or {}).request_key,
+                )
             result = final_result(receipt)
             result.update(await operation_summary(adapter, context, receipt))
             if receipt.state == "published" and __event_emitter__:
@@ -467,6 +484,7 @@ class Tools:
             raise
         except Exception as error:
             first_refusal = False
+            repeated_browser_failure = False
             if isinstance(error, ExecutionBlocked):
                 current_operation = error.operation_id
                 if adapter and context:
@@ -507,6 +525,12 @@ class Tools:
             if adapter and context and current_operation:
                 try:
                     if not isinstance(error, ExecutionBlocked):
+                        if isinstance(error, BrowserFailure):
+                            repeated_browser_failure = not await adapter.state.record_refusal(
+                                context,
+                                adapter.invocation_diagnostics(context, __metadata__ or {}),
+                                current_operation,
+                            )
                         diagnostic = await adapter.state.diagnostics(context, current_operation)
                         await adapter.state.mark(
                             context,
@@ -523,6 +547,10 @@ class Tools:
                     receipt = await adapter.state.get(context, current_operation)
                     result["receipt"] = await operation_summary(adapter, context, receipt)
                     result.update(receipt_diagnostics(receipt))
+                    diagnostic = await adapter.state.diagnostics(context, current_operation)
+                    plan = recovery_plan(receipt, diagnostic)
+                    result["recovery_plan"] = plan
+                    result["recovery"] = plan["instructions"]
                 except Exception:
                     result["receipt_unavailable"] = True
             # No exception repr/traceback: DB/provider errors can contain payloads or secrets.
@@ -545,8 +573,9 @@ class Tools:
                 stop_ready
                 and adapter
                 and context
+                and isinstance(error, (BrowserFailure, ExecutionBlocked))
                 and (
-                    isinstance(error, BrowserFailure)
+                    repeated_browser_failure
                     or (isinstance(error, ExecutionBlocked) and not first_refusal)
                 )
             ):

@@ -45,7 +45,8 @@ flags limit ordinary mistakes and overlap; they do not isolate malicious/manual
 code in that interpreter. This Tool is not a sandbox against arbitrary worker code.
 Existing same-origin Pyodide trust and browser persistence remain in place.
 
-Scratch and full logs stay in the browser. Captured stdout/stderr return to the
+Scratch and transient logs stay in the browser. Scratch logs and captured
+stdout/stderr share a per-stream byte cap. Captured stdout/stderr return to the
 assistant as bounded text: printing sensitive content discloses it even if its
 source file is private. Other host features can also pass file content to a model.
 

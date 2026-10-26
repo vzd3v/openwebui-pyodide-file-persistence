@@ -181,18 +181,23 @@ class BrowserReply:
                     }
                 )
             }
-        self.calls += 1
-        self.restored.append([*self.restore_batches, *batch])
-        self.restore_batches.clear()
-        self.entered.set()
-        if self.release:
-            await self.release.wait()
+        if config.get("phase") != "snapshot":
+            self.calls += 1
+            self.restored.append([*self.restore_batches, *batch])
+            self.restore_batches.clear()
+            self.entered.set()
+            if self.release:
+                await self.release.wait()
+        completion_only = config.get("phase") == "execute" and config.get("defer_snapshot")
         return {
             "result": json_text(
                 {
                     "version": 2,
                     "phase": config.get("phase", "execute"),
-                    "manifest": [file.manifest().model_dump() for file in self.files],
+                    "manifest": []
+                    if completion_only
+                    else [file.manifest().model_dump() for file in self.files],
+                    "execution_completed": True,
                     "exit_code": 0 if self.outcome == "ok" else 1,
                     "operation_id": data["id"],
                     "nonce": config["nonce"],
@@ -200,7 +205,9 @@ class BrowserReply:
                     "stdout": "synthetic output",
                     "stderr": "",
                     "files": encode_files(
-                        [
+                        []
+                        if completion_only
+                        else [
                             file
                             for file in self.files
                             if not any(
