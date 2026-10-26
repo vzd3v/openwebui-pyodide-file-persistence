@@ -12,7 +12,7 @@ Keep essential intermediate data under `scripts/state/`, alongside the saved
 program and an explicit dependency recipe. Use `work/` for reproducible scratch.
 Native inputs remain references to the original Files and require current access.
 
-Python variables, scratch, full logs and installed packages are not restored.
+Python variables, scratch, transient logs and installed packages are not restored.
 Each call has fresh Python globals even in a warm browser. Run records describe
 observed packages; they do not reinstall them. A saved program that reads missing
 scratch cannot resume merely because its source was saved.
@@ -24,6 +24,7 @@ Ask the assistant to use the existing operation ID and **no code**:
 | Evidence | Implemented action | Limit |
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
+| Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; the current callback cannot switch to the reconnected session |
 | All file blobs committed, manifest or publication interrupted | `retry` | Verifies saved bytes and current access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |
@@ -33,6 +34,11 @@ restoration may still have touched browser files. `possibly_running` and
 `outcome_unknown` do not establish whether it ran or stopped. `completed_reported`
 means bounded browser-reported completion was received; it does not prove a saved
 checkpoint or attest the program's truthfulness.
+
+Completion is acknowledged separately before retained files are scanned or
+transferred. A later snapshot failure therefore preserves received completion
+and bounded stdout/stderr. Loss before that acknowledgement can still leave the
+outcome unknown. Results include a `recovery_plan` with the applicable next step.
 
 Known-completed work without an acknowledged checkpoint blocks new programs with
 `execution_recovery_required`, preserving its pending root and completion evidence.
@@ -73,7 +79,8 @@ arbitrary recorded `micropip.freeze()` inventory as an installation command.
 ## Bounds, storage and sharing
 
 The [configured limits](../ops/install.md#limits) bound retained files, transfers
-and returned text. Scratch still consumes browser memory; these limits do not
+and returned text. Scratch stdout/stderr logs have the same per-stream text cap.
+Other scratch still consumes browser memory; these limits do not
 promise enough RAM for a particular calculation. Large results need smaller
 retained outputs, not a blind retry or a larger callback timeout.
 
@@ -90,11 +97,14 @@ The durable gate bounds dispatches and receipt growth, not the model's token use
 Set a finite native tool-iteration limit on the host. The optional
 [`stop_on_browser_failure` setting](../ops/install.md#native-response-stopping)
 uses a separately qualified native cancellation path. It is disabled by default.
-An actual browser failure stops immediately when enabled. A first fenced execute
-in a new request returns recovery instructions without allocating or dispatching;
-status/retry/recover remain allowed. Another execute in that request can stop it.
+The first browser failure returns recovery guidance to the assistant, including
+when stopping is enabled. Repeated failed browser actions or blocked executes in
+that request can stop it. A first fenced execute in a new request also returns
+recovery instructions without allocating or dispatching; status/retry/recover remain allowed.
 An execute/execute/status batch can therefore stop before status is reached;
-arbitrary batch ordering is not guaranteed. Recovery never resets the request gate.
+arbitrary batch ordering is not guaranteed. Successful retry/recover of the blocked
+operation releases only that request's gate after checkpoint acknowledgement;
+failed-session gates remain in force. Status and failed recovery never release it.
 It cannot make the browser stop or guarantee that host output from other calls
 in the same batch was appended. Committed Files and receipts remain discoverable
 through status/retry even when that host output is missing.

@@ -77,9 +77,9 @@ subject to host policy. They are not per-user `UserValves`.
 | `max_file_bytes` | 8 MiB decoded bytes per file |
 | `max_total_bytes` | 8 MiB decoded retained files, excluding scratch and native inputs |
 | `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
-| `max_text_bytes` | 16 KiB per stdout/stderr stream |
+| `max_text_bytes` | 16 KiB per stdout/stderr stream, including its scratch log |
 | `callback_timeout_seconds` | 55 seconds |
-| `stop_on_browser_failure` | `false`; separately qualified native cancellation |
+| `stop_on_browser_failure` | `false`; separately qualified cancellation of repeated failures |
 
 JSON/base64 overhead counts toward the serialized limit. Host upload/provider
 policies can lower effective limits. Decoded byte limits do not bypass them.
@@ -108,6 +108,12 @@ assistant generation before dispatch and under the native Chat row lock.
 This is not a stable documented Tool-stop extension API. Keep the default false
 until ordinary native calls and failure/recovery behavior pass acceptance on the
 exact host. Approval/resume and subagent contexts need separate qualification.
+
+The first browser failure returns phase-specific recovery guidance. Cancellation
+is reserved for repeated failed browser actions or repeated blocked executes
+after that guidance. Successful source-free recovery can release the current
+request gate; failed-session guards remain. Ordinary Python errors return their
+execution result and allow correction after private checkpointing.
 
 Cancellation does not stop browser code. Host output not yet appended from other
 calls in the same batch can be lost; committed Tool receipts/Files remain

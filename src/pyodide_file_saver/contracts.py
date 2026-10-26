@@ -109,7 +109,8 @@ class Limits(StrictModel):
         ge=1,
         le=64 * 1024,
         description=(
-            "Maximum captured UTF-8 bytes per stdout/stderr stream; excess text is truncated."
+            "Maximum captured UTF-8 bytes per stdout/stderr stream, including its scratch "
+            "log; excess text is truncated."
         ),
     )
     callback_timeout_seconds: int = Field(

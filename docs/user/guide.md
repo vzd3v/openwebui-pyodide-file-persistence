@@ -46,7 +46,7 @@ run the program again.
 | Directory | What belongs here | Saved by the Tool? |
 | --- | --- | --- |
 | `inputs/` | Attachments you have permission to use | Referenced originals; access is checked on every call |
-| `work/` | Temporary data and full logs | No |
+| `work/` | Temporary data and bounded logs | No |
 | `scripts/` | Programs, dependency recipes and essential intermediate data under `scripts/state/` | Yes, privately |
 | `outputs/` | Documents and results to download | Yes; new or changed files are linked after success |
 

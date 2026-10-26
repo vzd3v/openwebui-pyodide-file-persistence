@@ -131,7 +131,13 @@ def test_build_cli_rejects_import_binding_collisions(
     source.mkdir(parents=True)
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "browser-shell.js").write_text("/* synthetic browser asset */")
-    for name in ("browser_asset", "browser_workspace", "workspace_manifest", "workspace_execution"):
+    for name in (
+        "browser_asset",
+        "browser_workspace",
+        "workspace_manifest",
+        "workspace_execution",
+        "workspace_recovery",
+    ):
         (source / f"{name}.py").write_text("")
     for name, content in {
         "contracts": first,

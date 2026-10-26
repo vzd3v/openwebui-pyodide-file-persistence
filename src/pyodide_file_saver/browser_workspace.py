@@ -69,7 +69,8 @@ async def __FUNCTION__():
     evidence = {}
     try:
         continuation = cfg.get("continuation", False)
-        if cfg["phase"] == "recover":
+        snapshot_only = cfg["phase"] in {"snapshot", "recover"}
+        if snapshot_only:
             if not state or state["head"] != cfg["operation_id"]:
                 return response(outcome="recovery_unavailable")
             continuation = True
@@ -84,7 +85,7 @@ async def __FUNCTION__():
             state = dict(root=root, head=cfg["head"], inputs=[])
             cache[cfg["key"]] = state
         root = state["root"]
-        if cfg["phase"] != "recover":
+        if not snapshot_only:
             state.pop("execution", None)
         # Any mutation makes this root pending until this operation is acknowledged.
         state["head"] = cfg["operation_id"]
@@ -167,10 +168,12 @@ async def __FUNCTION__():
                     self.parts, self.truncated = [], False
                     self.remaining = cfg["limits"]["max_text_bytes"]
                 def write(self, value):
-                    self.file.write(value)
                     raw = value.encode("utf-8", "replace")
                     kept = raw[:self.remaining]
-                    self.parts.append(kept.decode("utf-8", "ignore"))
+                    text = kept.decode("utf-8", "ignore")
+                    if text:
+                        self.file.write(text)
+                        self.parts.append(text)
                     self.remaining -= len(kept)
                     self.truncated |= len(raw) > len(kept)
                     return len(value)
@@ -215,9 +218,12 @@ async def __FUNCTION__():
                 traceback.print_exc(file=stderr)
             finally:
                 bi.__import__ = old_import
-            state["execution"] = dict(execution_completed=True, exit_code=exit_code,
+            evidence = dict(execution_completed=True, exit_code=exit_code,
                 stdout=stdout.value(), stderr=stderr.value(), stdout_truncated=stdout.truncated,
                 stderr_truncated=stderr.truncated)
+            state["execution"] = evidence
+            stdout.file.close()
+            stderr.file.close()
             record["packages"] = sorted({d.metadata["Name"]: d.version
                 for d in importlib.metadata.distributions()}.items())
             try:
@@ -241,17 +247,18 @@ async def __FUNCTION__():
                 stream.write(cfg["code"])
             with open(record_path, "w", encoding="utf-8") as stream:
                 jsn.dump(record, stream, ensure_ascii=True, sort_keys=True)
-            evidence = dict(execution_completed=True, exit_code=exit_code,
-                stdout=stdout.value(), stderr=stderr.value(), stdout_truncated=stdout.truncated,
-                stderr_truncated=stderr.truncated)
-            stdout.file.close()
-            stderr.file.close()
             return evidence
-        if cfg["phase"] != "recover":
+        if not snapshot_only:
             state["execution"] = await execute()
         evidence = state.get("execution")
         if not evidence:
             return response(outcome="recovery_unavailable")
+        if cfg["phase"] == "execute" and cfg.get("defer_snapshot"):
+            # A small acknowledgement reaches durable server state before any
+            # retained-file scan, encoding or transfer can fail. Snapshot never
+            # runs the submitted source again.
+            return response(outcome="ok" if evidence["exit_code"] == 0 else "execution_error",
+                **evidence)
         # Aliases are checked again after arbitrary user code, but never traversed.
         if os.path.realpath(root) != root or not stat.S_ISDIR(os.lstat(root).st_mode):
             raise ValueError("Managed root replaced")
@@ -345,7 +352,7 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
             else "Browser retained snapshot failed",
             "browser_busy" if value.outcome == "busy" else "browser_recovery_unavailable",
             value.phase
-            if value.phase in {"prepare", "restore", "execute", "recover"}
+            if value.phase in {"prepare", "restore", "execute", "snapshot", "recover"}
             else "unknown",
         )
     return value

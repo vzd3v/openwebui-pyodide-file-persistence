@@ -98,6 +98,27 @@ Native stop remains opt-in. These checks do not qualify pristine upstream runtim
 behavior, delegated tasks, approval/resume or preservation of other calls' results
 in the same host batch. See [limitations](../user/limitations.md).
 
+## 0.2.0a5 native qualification
+
+Artifact SHA-256
+`14f7c178b91a3d3f3aada87ea65c697926e935eb88c627d03001272fa6547468`
+was checked through ordinary assistant calls in Chromium on PostgreSQL-backed
+Open WebUI 0.12.3 with local customizations and local storage. This was not a
+pristine upstream runtime. Optional native stopping was enabled.
+
+- Bash published a baseline output, then Python completed once before its real
+  9 MiB output exceeded the default retained-file limit.
+- Separate prepare/execute/snapshot callbacks were observed. The first snapshot
+  failure returned normal Tool guidance with received completion/stdout, allowing
+  the assistant to finish its answer without a native executor error.
+- After an operator limit adjustment, source-free recover saved the same operation
+  and exact 9 MiB output. A subsequent Python call verified execution counter one
+  and ordinary same-page continuation.
+
+This focused check does not qualify network disconnect/reconnect, repeated native
+cancellation, fresh-browser restoration, sharing or other storage providers for
+these exact bytes. The earlier a4 evidence remains scoped to that artifact.
+
 ## Version-sensitive integration
 
 `execute:python` is checked against upstream source, but is not documented as a
@@ -110,6 +131,15 @@ and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.
 Source inspection is not runtime acceptance for every host.
 
 ## Saved-data compatibility
+
+**0.2.0a5:** preserves a4 receipt/table formats. New executions acknowledge
+completion before a separate source-free snapshot callback. Recovery instructions
+distinguish pre-dispatch failure, unknown execution and received completion. The
+first browser failure returns guidance; optional cancellation applies to repeated
+failures/refusals. Successful retry/recover releases only the current request's
+gate for the acknowledged operation, preserving failed-session guards. Scratch
+stdout/stderr logs now share the configured per-stream text cap. Automated tests
+cover the new protocol; native coverage is limited to the focused a5 check above.
 
 **0.2.0a4:** creates additive diagnostics/gate tables without changing existing
 receipt JSON, Files or head semantics. Earlier readers can still read those

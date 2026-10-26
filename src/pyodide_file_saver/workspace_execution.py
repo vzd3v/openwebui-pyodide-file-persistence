@@ -37,6 +37,15 @@ from .workspace_manifest import (
     validate_manifest,
 )
 
+COMPLETION_FIELDS = (
+    "execution_completed",
+    "exit_code",
+    "stdout",
+    "stderr",
+    "stdout_truncated",
+    "stderr_truncated",
+)
+
 
 async def browser_call(
     event_call: Callable[[dict[str, JsonValue]], Awaitable[object]],
@@ -231,6 +240,7 @@ async def execute_workspace(
             saved = await adapter.state.load(session, receipt.operation_id, context, lock=True)
             saved.inputs, saved.legacy_paths = inputs, legacy
             await adapter.state.put(session, saved)
+        config["defer_snapshot"] = True
     await adapter.state.mark(
         context,
         receipt.operation_id,
@@ -241,9 +251,15 @@ async def execute_workspace(
     reply = workspace_reply(raw, receipt.operation_id, nonce, limits)
     if reply.phase != ("recover" if recovering else "execute"):
         raise SaverError("Invalid browser execution phase")
+    if reply.outcome in {"ok", "execution_error"} and not reply.execution_completed:
+        raise SaverError("Browser did not acknowledge program completion")
     if reply.execution_completed or reply.outcome in {"ok", "execution_error"}:
         async with adapter.state.transaction() as session:
             saved = await adapter.state.load(session, receipt.operation_id, context, lock=True)
+            if saved.execution_completed and any(
+                getattr(saved, key) != getattr(reply, key) for key in COMPLETION_FIELDS
+            ):
+                raise SaverError("Completion evidence changed after acknowledgement")
             saved.execution_completed, saved.python_ok = True, reply.exit_code == 0
             saved.stdout, saved.stderr, saved.exit_code = (
                 reply.stdout,
@@ -262,6 +278,19 @@ async def execute_workspace(
         raise BrowserFailure(
             "Browser retained snapshot failed", "browser_snapshot_failed", reply.phase
         )
+    if not recovering:
+        config.update(phase="snapshot", code="", shell_asset="")
+        raw, nonce = await browser_call(event_call, config, limits, session_id)
+        snapshot = workspace_reply(raw, receipt.operation_id, nonce, limits)
+        if snapshot.phase != "snapshot":
+            raise SaverError("Invalid browser snapshot phase")
+        if snapshot.outcome == "snapshot_error":
+            raise BrowserFailure(
+                "Browser retained snapshot failed", "browser_snapshot_failed", "snapshot"
+            )
+        if any(getattr(snapshot, key) != getattr(reply, key) for key in COMPLETION_FIELDS):
+            raise SaverError("Snapshot completion evidence changed after acknowledgement")
+        reply = snapshot
     changed = decode_files(reply.files, limits)
     changes = {item.path: item for item in changed}
     inherited_by_path = {slot.path: slot for slot in inherited}

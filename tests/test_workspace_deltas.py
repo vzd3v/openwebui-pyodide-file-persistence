@@ -34,11 +34,12 @@ class DeltaBrowser(BrowserReply):
         assert isinstance(reply, dict)
         if reply.get("phase") == "prepare":
             reply["warm"] = self.warm
-        elif reply.get("phase") == "execute":
+        elif reply.get("phase") in {"execute", "snapshot", "recover"}:
             reply.update(
                 version=2,
-                phase="execute",
-                manifest=[file.manifest().model_dump() for file in self.files],
+                manifest=[]
+                if reply["phase"] == "execute"
+                else [file.manifest().model_dump() for file in self.files],
                 exit_code=0 if self.outcome == "ok" else 7,
             )
             reply["outcome"] = "ok" if self.outcome == "ok" else "execution_error"

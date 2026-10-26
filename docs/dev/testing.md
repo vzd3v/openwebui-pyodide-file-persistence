@@ -73,6 +73,11 @@ worker without Open WebUI. It checks shared Python/shell files, 256 MiB scratch,
 restoration, shell errors and rejected links. It proves browser-library behavior,
 not native Open WebUI acceptance or available RAM on every device.
 
+It also checks completion before snapshot failure, source-free snapshot/recovery,
+single execution and bounded scratch logs. Database tests distinguish failures
+before dispatch, during execution and after acknowledged completion, and check
+that recovery releases only the applicable request gate.
+
 ## What CI establishes
 
 CI runs formatting, lint, strict types, deterministic builds, unit and integration

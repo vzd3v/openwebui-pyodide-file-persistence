@@ -16,8 +16,9 @@ behavior.
    it if warm; otherwise restore verified saved files sequentially.
 3. Execute the submitted source once. Python and shell read/write the same Pyodide
    filesystem; there is no mirrored shell filesystem.
-4. Hash retained files. Transfer changed bytes and a complete manifest; do not
-   scan or encode scratch.
+4. Return a small completion acknowledgement and persist its bounded streams.
+   A separate source-free callback hashes retained files and transfers changed
+   bytes and a complete manifest; it does not scan or encode scratch.
 5. Commit immutable file blobs, then the manifest. Select the workspace head with
    a revision compare-and-set.
 6. After successful execution, publish new/changed outputs using their existing
@@ -93,10 +94,13 @@ Remote reads may materialize a whole object before a bounded local read.
 
 Each call has fresh globals. Run records capture source, cwd, runtime, available
 package lock, exit status and truncation flags. The head keeps the latest recipe;
-historical receipts retain immutable earlier blobs. Full logs remain transient.
+historical receipts retain immutable earlier blobs. Transient scratch logs and
+returned text share the same per-stream byte cap.
 Errors and nonzero exits do not issue outputs.
 
-Completion streams are captured before snapshot/recipe work. `recover` snapshots
+Completion streams are captured before snapshot/recipe work. The execution reply
+is durably acknowledged before the separate snapshot callback. Later replies
+must preserve that completion evidence. `recover` snapshots
 only the current exact pending root after completion; it never runs source.
 Partially uploaded snapshots must match every reserved path/hash/size and reuse
 its immutable IDs. `retry` reconstructs a missing manifest only after all blobs
@@ -113,6 +117,7 @@ Python modules are under `src/pyodide_file_saver/`.
 | `workspace_state.py` | Tables, durable receipts, revision compare-and-set |
 | `workspace_execution.py` | Authorization, bounded restoration, delta commits |
 | `workspace_manifest.py` | Version-two immutable-blob manifests |
+| `workspace_recovery.py` | Recovery instructions derived from durable evidence |
 | `openwebui_adapter.py` | Version-sensitive host, storage and chat integration |
 | `browser_workspace.py` | Browser prepare/restore/execute protocol |
 | `browser_execution.py` | Version-one recovery and package hints |

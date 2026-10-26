@@ -126,7 +126,16 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
         }
       }
       if (language === "bash" && !shellReady) config.include_shell = true;
-      const value = await run(config);
+      const completion = await run({ ...config, defer_snapshot: true });
+      const value =
+        completion.outcome === "snapshot_error"
+          ? completion
+          : await run({
+              ...config,
+              phase: "snapshot",
+              code: "",
+              include_shell: false,
+            });
       if (value.manifest) {
         for (const item of value.files) retained.set(item.path, item.data);
         for (const key of retained.keys())
@@ -188,6 +197,14 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       ).toString(),
       source,
     );
+    const boundedLogs = await execute(
+      "import sys\nfor _ in range(30000): sys.stdout.write('é'*32)",
+    );
+    assert.equal(boundedLogs.stdout_truncated, true);
+    const logSizes = await execute(
+      "from pathlib import Path\nlogs=list(Path('.').glob('*.stdout'))\nassert logs and all(p.stat().st_size<=16384 for p in logs)\nprint('scratch logs bounded')",
+    );
+    assert.equal(logSizes.outcome, "ok", logSizes.stderr);
     const bad = await execute("echo failure > outputs/failed.txt; exit 7", "bash");
     assert.equal(bad.outcome, "execution_error");
     assert.equal(bad.exit_code, 7);
@@ -289,7 +306,16 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
         callback_timeout_seconds: 55,
       },
     };
-    const oversized = await run(pending);
+    const acknowledged = await run({ ...pending, defer_snapshot: true });
+    assert.equal(acknowledged.outcome, "ok");
+    assert.equal(acknowledged.execution_completed, true);
+    assert.equal(acknowledged.manifest, undefined);
+    assert.equal(acknowledged.files, undefined);
+    const oversized = await run({
+      ...pending,
+      phase: "snapshot",
+      code: "raise Exception('never run')",
+    });
     assert.equal(oversized.outcome, "snapshot_error");
     assert.equal(oversized.execution_completed, true);
     assert.equal(oversized.exit_code, 0);
