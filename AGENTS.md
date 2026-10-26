@@ -26,6 +26,10 @@ force-added. Public contributors do not need this optional local file.
   and scoped compatibility evidence; link to CI/lockfiles for test and dependency versions.
 - Follow [verification instructions](docs/dev/testing.md). Report skipped checks
   explicitly; simulated host callbacks are not browser acceptance evidence.
+- Select checks from the changed behavior and the compatibility claims being made.
+  Run the applicable checks to completion; do not stop at listing a checklist.
+  Publishing a scoped prerelease does not require requalifying every unchanged
+  native scenario. Follow the release criteria in the verification instructions.
 - Edit source modules, not generated `dist/` files. Build deterministically with
   `npm ci --ignore-scripts && npm run build`, then
   `python3 scripts/build_tool.py --check`; do not commit generated artifacts.

@@ -56,8 +56,9 @@ extend Open WebUI's own host Python requirements.
 
 ## Recorded browser checks
 
-These checks apply to the Tool versions listed below. A new build needs its own
-native acceptance. The observed configuration used Open WebUI 0.12.2, PostgreSQL
+These checks apply to the Tool versions listed below. New builds need verification
+appropriate to their changes and claims, as described in [testing](testing.md).
+The observed configuration used Open WebUI 0.12.2, PostgreSQL
 and local storage. It was not established as a pristine upstream installation;
 no frontend patch was added for this Tool.
 

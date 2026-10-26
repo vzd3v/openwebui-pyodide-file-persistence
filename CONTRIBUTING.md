@@ -55,6 +55,11 @@ SQLite/PostgreSQL, and the Chromium worker. The
 not qualify every Open WebUI host or storage provider. Report observed evidence
 at its actual scope.
 
+For releases, follow the [scoped verification criteria](docs/dev/testing.md#publishing-a-release).
+Prereleases may publish the exact reviewed Tool asset after relevant checks,
+with explicit compatibility limits. Complete the checks that support the change;
+do not require every historical native scenario for each version bump.
+
 ## Preserve these boundaries
 
 - Use English documentation and synthetic examples. Never commit credentials,

@@ -92,9 +92,10 @@ line-count quotas or coverage-percentage gate; focused test-only PRs are welcome
 
 ## Native Open WebUI acceptance
 
-For a release or deployment, test the exact Tool file, host version,
-browser and storage provider. Use the real served Pyodide worker and ordinary
-assistant calls. Include:
+Choose native checks from the changed behavior and the compatibility claims being
+made. Use the exact Tool file, record the host version, browser and storage
+provider, and use the real served Pyodide worker and ordinary assistant calls.
+The scenario inventory is:
 
 - DOCX/XLSX/PDF generation, automatic saving and exact downloaded bytes.
 - Clickable links in assistant answers in original and shared stock UI.
@@ -102,9 +103,40 @@ assistant calls. Include:
 - Owner/recipient access, foreign/private denial and revocation.
 - Interruption, failure and recovery paths relevant to the deployment.
 
-Callback simulation, source inspection, loading a schema and passing CI do not
-replace these checks. A new build does not inherit an older build's acceptance.
-See [compatibility](compatibility.md) for the recorded scope.
+Changes to execution/transport require relevant interruption and recovery checks.
+Changes to restore, publication or access control require the corresponding
+restoration, exact-download or permission scenarios. A new host/provider or a
+claim of broad installation readiness requires the applicable inventory above.
+Documentation-only changes need link/content checks; rerun runtime checks only
+when the generated Tool bytes or claimed behavior change.
+
+Callback simulation, source inspection and CI do not establish native behavior.
+Earlier observations remain valid historical evidence for their recorded bytes;
+do not relabel them as checks of a new build. An unchanged scenario need not be
+repeated merely because the version changed. See [compatibility](compatibility.md)
+for the recorded scope.
+
+## Publishing a release
+
+A release asset is the assembled Python Tool file, not a compiled executable.
+It lets an administrator install without setting up the build toolchain.
+
+Before publishing a prerelease:
+
+1. Pass required CI on the reviewed source revision and complete checks relevant
+   to the change. Do not bypass a failing check.
+2. Build deterministically with `scripts/build_tool.py --check`; attach that exact
+   Tool file and record its SHA-256 and source tag.
+3. For behavior changes, record native evidence for the affected path when it
+   depends on host/browser integration. State tested versions/providers and
+   untested compatibility in the documentation and release notes. A missing
+   check blocks a claim that depends on it, rather than every scoped prerelease.
+
+Do not require the complete native inventory for every prerelease. A stable
+release or new broad compatibility claim needs representative coverage of that
+claim, including restoration, formats, downloads and access control. Production
+adoption separately requires acceptance appropriate to that host and rollout;
+publishing an asset does not authorize a deployment.
 
 Keep deployment identities, tokens, raw chats and operational evidence out of the
 repository and public reports. Publish synthetic reproduction steps and clearly

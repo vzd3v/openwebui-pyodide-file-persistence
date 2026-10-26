@@ -62,8 +62,9 @@ cards or Controls:
 5. Try your actual result formats and storage provider. Check errors and recovery
    before treating the installation as ready for users.
 
-See [testing](../dev/testing.md#native-open-webui-acceptance) for the full acceptance
-scope. Passing CI or loading the Tool's schema is not a substitute for these checks.
+See [testing](../dev/testing.md#native-open-webui-acceptance) for choosing checks
+appropriate to your installation. Passing CI or loading the Tool's schema does
+not establish native behavior on your host.
 
 ## Limits
 
