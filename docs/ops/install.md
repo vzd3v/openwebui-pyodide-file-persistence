@@ -44,7 +44,8 @@ see [Contributing](../../CONTRIBUTING.md).
 
 On the first managed call, the Tool creates and validates
 `pyodide_file_saver_workspace`, `pyodide_file_saver_operation`,
-`pyodide_file_saver_diagnostic` and `pyodide_file_saver_gate`. It does not
+`pyodide_file_saver_diagnostic`, `pyodide_file_saver_gate` and
+`pyodide_file_saver_browser`. It does not
 change Open WebUI's own table definitions or migrations. Missing permissions or
 incompatible state produce an error; the Tool never drops data to repair them.
 
