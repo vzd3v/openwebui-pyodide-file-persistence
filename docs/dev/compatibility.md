@@ -115,10 +115,34 @@ pristine upstream runtime. Optional native stopping was enabled.
 - After an operator limit adjustment, source-free recover saved the same operation
   and exact 9 MiB output. A subsequent Python call verified execution counter one
   and ordinary same-page continuation.
+- A separate ordinary workflow generated DOCX/XLSX, shared saved state with Bash,
+  and restored exact document hashes in a fresh worker; original downloads stayed readable.
 
 This focused check does not qualify network disconnect/reconnect, repeated native
-cancellation, fresh-browser restoration, sharing or other storage providers for
+cancellation, sharing or other storage providers for
 these exact bytes. The earlier a4 evidence remains scoped to that artifact.
+
+## 0.2.0a6 native qualification
+
+Artifact SHA-256
+`779595e6204edaa7e465643c012b0cef64565249cb4d05a89172333720da86c4`
+was checked through ordinary assistant calls and real served workers in Chromium
+on PostgreSQL-backed Open WebUI 0.12.3 with local customizations and local storage.
+This was not a pristine upstream runtime. Native source was not changed for the Tool.
+
+- After an accepted request, closing the originating WebSocket preserved its page
+  and worker. The Tool recognized that interpreter under its replacement session,
+  rejected another same-user/same-chat worker, and dispatched the program once.
+  The downloaded bytes matched; a later call verified execution counter one.
+- Destroying the original page returned not-started guidance and sent no program
+  to the remaining same-user/same-chat tab.
+- Stop while reconnection was unavailable caused zero program dispatches.
+- A real program-start marker preceded a mid-execution socket close. The Tool
+  preserved unknown outcome with one dispatch and did not replay source.
+
+These focused checks do not qualify pristine upstream installations, delegated
+or approval/resume paths, remote storage, lost-restore acknowledgement replay,
+provider-stream continuation or recovery of a destroyed interpreter.
 
 ## Version-sensitive integration
 
