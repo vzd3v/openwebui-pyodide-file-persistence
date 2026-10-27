@@ -1,6 +1,6 @@
 [project]
 name = "openwebui-pyodide-file-persistence"
-version = "0.2.0a5"
+version = "0.2.0a6"
 description = "Shared browser Python and Bash workspaces with durable files for Open WebUI"
 requires-python = ">=3.11"
 license = "MIT"

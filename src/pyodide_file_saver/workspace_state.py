@@ -1,4 +1,4 @@
-"""Two namespaced tables in the host DB; short transactions, no provider I/O."""
+"""Namespaced tables in the host DB; short transactions, no provider I/O."""
 
 from __future__ import annotations
 
@@ -93,6 +93,42 @@ class WorkspaceState:
             Column("chat_id", String, nullable=False),
             Column("operation_id", String, nullable=False),
         )
+        self.browser = Table(
+            "pyodide_file_saver_browser",
+            self.metadata,
+            Column("actor_id", String, primary_key=True),
+            Column("chat_id", String, primary_key=True),
+            Column("session_key", String, primary_key=True),
+            Column("runtime_id", String, nullable=False),
+        )
+
+    async def browser_runtime(self, context: BoundContext, session_key: str) -> str:
+        async with self.sessions() as session:
+            value = await session.scalar(
+                select(self.browser.c.runtime_id).where(
+                    self.browser.c.actor_id == context.actor_id,
+                    self.browser.c.chat_id == context.chat_id,
+                    self.browser.c.session_key == session_key,
+                )
+            )
+            return str(value) if value else ""
+
+    async def bind_browser(self, context: BoundContext, session_key: str, runtime_id: str) -> None:
+        constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
+        async with self.transaction() as session:
+            await session.execute(
+                constructor(self.browser)
+                .values(
+                    actor_id=context.actor_id,
+                    chat_id=context.chat_id,
+                    session_key=session_key,
+                    runtime_id=runtime_id,
+                )
+                .on_conflict_do_update(
+                    index_elements=["actor_id", "chat_id", "session_key"],
+                    set_={"runtime_id": runtime_id},
+                )
+            )
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AsyncSession]:

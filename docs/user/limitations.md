@@ -2,8 +2,10 @@
 
 Python runs in your active browser. Keep the original chat tab connected until
 execution and saving finish. Closing the browser does not move the computation
-to a server or create a background job. A reconnect or another open tab does not
-retarget an in-flight request: its callback belongs to the original session.
+to a server or create a background job. On a qualified Open WebUI 0.12.3 host,
+the Tool can reconnect before program dispatch if it recognizes the original
+interpreter in an authenticated session. A reloaded worker, an unrelated tab or
+missing continuity evidence cannot replace that interpreter automatically.
 
 ## What survives
 
@@ -24,7 +26,7 @@ Ask the assistant to use the existing operation ID and **no code**:
 | Evidence | Implemented action | Limit |
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
-| Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; the current callback cannot switch to the reconnected session |
+| Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; automatic reconnect could not establish a usable original runtime |
 | All file blobs committed, manifest or publication interrupted | `retry` | Verifies saved bytes and current access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |

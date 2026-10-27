@@ -77,6 +77,10 @@ It also checks completion before snapshot failure, source-free snapshot/recovery
 single execution and bounded scratch logs. Database tests distinguish failures
 before dispatch, during execution and after acknowledged completion, and check
 that recovery releases only the applicable request gate.
+Socket-boundary fixtures also check pre-dispatch reconnection against runtime
+identity, actor/chat/session freshness, generation replacement and cancellation.
+They reject replay after restore/execute dispatch. These are synthetic host
+boundaries; native reconnect qualification still needs a real served frontend.
 
 ## What CI establishes
 

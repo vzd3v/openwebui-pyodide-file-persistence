@@ -84,6 +84,14 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       assert.equal(value.nonce, generated.nonce);
       return value;
     };
+    const initialProbe = await run({
+      operation_id: randomUUID(),
+      key: "synthetic",
+      head: "",
+      phase: "probe",
+      restore: [],
+    });
+    assert.match(initialProbe.runtime_id, /^[0-9a-f-]{36}$/);
     let head = "";
     let baseline = [];
     const retained = new Map();
@@ -102,6 +110,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
         key: "synthetic",
         head,
         phase: "execute",
+        runtime_id: prepared.runtime_id,
         warm: prepared.warm,
         code,
         language,
@@ -150,6 +159,18 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       'from pathlib import Path\nPath(\'scratch.bin\').write_bytes(bytes(256*1024*1024))\nPath(\'../scripts/data.json\').write_text(\'{"items":[{"name":"α","n":2},{"name":"β","n":3}]}\',encoding=\'utf-8\')\nprint(\'python ready\')',
     );
     assert.equal(first.outcome, "ok", first.stderr);
+    assert.equal(first.runtime_id, initialProbe.runtime_id);
+    const wrongRuntime = await run({
+      operation_id: randomUUID(),
+      key: "synthetic",
+      head,
+      phase: "execute",
+      runtime_id: randomUUID(),
+      restore: [],
+      code: "raise AssertionError('must not execute')",
+    });
+    assert.equal(wrongRuntime.outcome, "runtime_changed");
+    assert.equal(wrongRuntime.execution_completed, undefined);
     assert(first.manifest.every((item) => !item.path.startsWith("work/")));
     assert(first.files.reduce((sum, file) => sum + file.data.length, 0) < 20000);
     const shell = await execute(
@@ -214,6 +235,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       "from pathlib import Path\nassert not Path('scratch.bin').exists()\nassert Path('outputs/result.txt').read_text()=='BETA\\n'\nprint('cold restored')",
     );
     assert.equal(cold.outcome, "ok", cold.stderr);
+    assert.notEqual(cold.runtime_id, initialProbe.runtime_id);
     const rootPython = await execute(
       "from pathlib import Path\nimport os\nPath('work/fmt_results.json').write_text('{\"value\":42}')\nos.chdir('work')",
       "python",

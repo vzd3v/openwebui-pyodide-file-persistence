@@ -8,6 +8,7 @@ import inspect
 import io
 import mimetypes
 import time
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, Literal, Protocol, cast
@@ -19,6 +20,7 @@ from sqlalchemy import inspect as inspect_sqlalchemy
 from sqlalchemy.engine import CursorResult, RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from .browser_workspace import workspace_reply, workspace_wrapper
 from .contracts import (
     JSON_VALUE,
     BoundContext,
@@ -85,6 +87,228 @@ class HostFileAccess(Protocol):
         user: HostUser,
         db: AsyncSession | None = None,
     ) -> bool: ...
+
+
+EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
+
+
+class HostEventFactory(Protocol):
+    async def __call__(self, request_info: dict[str, JsonValue]) -> EventCall | None: ...
+
+
+class HostSessionPool(Protocol):
+    def get(self, key: str) -> dict[str, object] | None: ...
+
+
+BROWSER_POLL_SECONDS = 1
+BROWSER_PROBE_SECONDS = 5
+BROWSER_PROBE_CANDIDATES = 8
+
+
+class NativeBrowserConnection:
+    """Rebind control calls only after recognizing the original live runtime.
+
+    A runtime identifier is continuity evidence inside one authenticated user's
+    interpreter, not an attestation or an authorization credential.
+    """
+
+    def __init__(
+        self,
+        adapter: OpenWebUIAdapter,
+        context: BoundContext,
+        metadata: dict[str, JsonValue],
+        event_call: EventCall,
+        limits: Limits,
+    ) -> None:
+        self.adapter, self.context, self.metadata = adapter, context, metadata
+        self.event_call, self.limits = event_call, limits
+        session = metadata.get("session_id")
+        self.session_id = session if isinstance(session, str) and 0 < len(session) <= 256 else ""
+        self.runtime_id = ""
+        self.reconnected = False
+        self.session_timeout = 0.0
+        self.pool: HostSessionPool | None = None
+        self.batches: Callable[[], Iterable[Iterable[tuple[str, dict[str, object]]]]] | None = None
+        self.factory: HostEventFactory | None = None
+        # Optional, version-sensitive recovery. Other hosts keep the injected RPC.
+        if self.session_id and adapter.task_id(metadata):
+            try:
+                if host_attribute("open_webui.env", "VERSION") != "0.12.3":
+                    return
+                pool = host_attribute("open_webui.socket.main", "SESSION_POOL")
+                batches = host_attribute("open_webui.socket.main", "get_session_pool_batches")
+                factory = host_attribute("open_webui.socket.main", "get_event_call")
+                timeout = host_attribute("open_webui.socket.main", "SESSION_POOL_TIMEOUT")
+                if not isinstance(timeout, (int, float)) or timeout <= 0:
+                    return
+                adapter.require_callable(pool, "get", False, "session")
+                adapter.require_callable(batches, "__call__", False)
+                adapter.require_callable(factory, "__call__", True, {})
+            except SaverError:
+                return
+            self.pool = cast(HostSessionPool, pool)
+            self.batches = cast(
+                Callable[[], Iterable[Iterable[tuple[str, dict[str, object]]]]], batches
+            )
+            self.factory = cast(HostEventFactory, factory)
+            self.session_timeout = float(timeout)
+
+    def live(self, session_id: str, *, chat: bool = False) -> bool:
+        session = self.pool.get(session_id) if self.pool else None
+        seen = session.get("last_seen_at") if session else None
+        chats = session.get("chat_ids") if session else None
+        return bool(
+            session
+            and session.get("id") == self.context.actor_id
+            and isinstance(seen, (int, float))
+            and time.time() - seen <= self.session_timeout
+            and (not chat or isinstance(chats, list) and self.context.chat_id in chats)
+        )
+
+    @staticmethod
+    def session_key(session_id: str) -> str:
+        return digest(session_id.encode())
+
+    async def observe(self, runtime_id: str) -> None:
+        if not runtime_id or not self.session_id:
+            return
+        try:
+            if str(UUID(runtime_id)) != runtime_id:
+                raise ValueError
+        except ValueError as error:
+            raise SaverError("Browser runtime identifier is invalid") from error
+        if self.reconnected and self.runtime_id != runtime_id:
+            raise BrowserFailure(
+                "Browser runtime changed during reconnect", "browser_runtime_changed", "prepare"
+            )
+        self.runtime_id = runtime_id
+        await self.adapter.state.bind_browser(
+            self.context, self.session_key(self.session_id), runtime_id
+        )
+
+    async def invoke(
+        self, callback: EventCall, payload: dict[str, JsonValue], sid: str, phase: str
+    ) -> object:
+        if not self.live(sid):
+            raise BrowserFailure("Browser session is unavailable", "session_disconnected", phase)
+        pending = asyncio.ensure_future(callback(payload))
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=BROWSER_POLL_SECONDS)
+                if done:
+                    return pending.result()
+                if not self.live(sid):
+                    raise BrowserFailure(
+                        "Browser session is unavailable", "session_disconnected", phase
+                    )
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    def probe_request(self, sid: str) -> tuple[dict[str, JsonValue], str, str]:
+        operation_id = str(uuid4())
+        config: dict[str, JsonValue] = {
+            "operation_id": operation_id,
+            "key": digest((self.context.actor_id + ":" + self.context.chat_id).encode()),
+            "head": "",
+            "phase": "probe",
+            "restore": [],
+            "limits": self.limits.model_dump(),
+        }
+        wrapper, nonce = workspace_wrapper(config, "")
+        return (
+            {
+                "type": "execute:python",
+                "data": {"id": nonce, "code": wrapper, "files": [], "session_id": sid},
+            },
+            operation_id,
+            nonce,
+        )
+
+    async def call(self, payload: dict[str, JsonValue], phase: str) -> object:
+        if self.pool is None or self.batches is None or self.factory is None:
+            return await self.event_call(payload)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise SaverError("Invalid native browser request")
+        data["session_id"] = self.session_id
+        try:
+            raw = await self.invoke(self.event_call, payload, self.session_id, phase)
+            OpenWebUIAdapter.classify_callback(raw, phase)
+            return raw
+        except BrowserFailure:
+            if phase != "prepare" or self.live(self.session_id):
+                raise
+        if not self.runtime_id:
+            self.runtime_id = await self.adapter.state.browser_runtime(
+                self.context, self.session_key(self.session_id)
+            )
+        if not self.runtime_id:
+            raise BrowserFailure("Browser session is unavailable", "session_disconnected", phase)
+        tested: set[str] = set()
+        while True:
+            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+            candidates = [
+                sid
+                for batch in self.batches()
+                for sid, _ in batch
+                if sid not in tested and self.live(sid, chat=True)
+            ][: max(0, BROWSER_PROBE_CANDIDATES - len(tested))]
+            for sid in candidates:
+                tested.add(sid)
+                callback = await self.factory(
+                    {
+                        "session_id": sid,
+                        "user_id": self.context.actor_id,
+                        "chat_id": self.context.chat_id,
+                        "message_id": self.context.message_id,
+                    }
+                )
+                if callback is None:
+                    continue
+                probe, operation_id, nonce = self.probe_request(sid)
+                try:
+                    async with asyncio.timeout(BROWSER_PROBE_SECONDS):
+                        raw = await self.invoke(callback, probe, sid, "probe")
+                    reply = workspace_reply(raw, operation_id, nonce, self.limits)
+                except (TimeoutError, SaverError):
+                    continue
+                if reply.phase != "probe" or reply.runtime_id != self.runtime_id:
+                    continue
+                await self.adapter.validate_generation(
+                    self.context, self.metadata, require_task=True
+                )
+                self.session_id, self.event_call = sid, callback
+                self.reconnected = True
+                await self.observe(reply.runtime_id)
+                data["session_id"] = sid
+                raw = await self.invoke(callback, payload, sid, phase)
+                OpenWebUIAdapter.classify_callback(raw, phase)
+                return raw
+            await asyncio.sleep(BROWSER_POLL_SECONDS)
+
+    async def ensure_route(self) -> None:
+        """Reconnect before mutation; never replay an already-sent mutable callback."""
+        if self.pool is None:
+            return
+        await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+        if self.live(self.session_id):
+            return
+        payload, operation_id, nonce = self.probe_request(self.session_id)
+        try:
+            async with asyncio.timeout(self.limits.callback_timeout_seconds):
+                raw = await self.call(payload, "prepare")
+        except TimeoutError as error:
+            raise BrowserFailure(
+                "Browser reconnect timed out before program dispatch",
+                "browser_callback_timeout",
+                "prepare",
+            ) from error
+        reply = workspace_reply(raw, operation_id, nonce, self.limits)
+        if reply.phase != "probe":
+            raise SaverError("Invalid browser continuity reply")
+        await self.observe(reply.runtime_id)
 
 
 def host_attribute(module: str, attribute: str) -> object:
@@ -168,7 +392,7 @@ class OpenWebUIAdapter:
                 "Native cancellation is qualified only for Open WebUI 0.12.3; "
                 "disable stop_on_browser_failure until this host is qualified"
             )
-        self._call(
+        self.require_callable(
             host_attribute("open_webui.models.chat_messages", "ChatMessages"),
             "upsert_message",
             True,
@@ -309,8 +533,8 @@ class OpenWebUIAdapter:
         )
         # Bind the calls we actually make, rather than assuming a matching name
         # or version proves argument/await compatibility. No host write canaries.
-        self._call(self.users_api, "get_user_by_id", True, "id")
-        self._call(
+        self.require_callable(self.users_api, "get_user_by_id", True, "id")
+        self.require_callable(
             self.chats_api,
             "get_accessible_chat_by_id",
             True,
@@ -320,14 +544,16 @@ class OpenWebUIAdapter:
             permission="write",
             chat=object(),
         )
-        self._call(self.config, "get", True, "key", None)
-        self._call(self.config, "get", True, "key")
-        self._call(self.file_access, "__call__", True, "id", "read", object(), db=object())
-        self._call(self.storage, "get_file", False, "path")
-        self._call(self.storage, "upload_file", False, io.BytesIO(), "name", {})
+        self.require_callable(self.config, "get", True, "key", None)
+        self.require_callable(self.config, "get", True, "key")
+        self.require_callable(
+            self.file_access, "__call__", True, "id", "read", object(), db=object()
+        )
+        self.require_callable(self.storage, "get_file", False, "path")
+        self.require_callable(self.storage, "upload_file", False, io.BytesIO(), "name", {})
 
     @staticmethod
-    def _call(
+    def require_callable(
         owner: object, name: str, asynchronous: bool, *args: object, **kwargs: object
     ) -> None:
         function = owner if name == "__call__" else cast(object, getattr(owner, name, None))

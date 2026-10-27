@@ -46,7 +46,7 @@ from pyodide_file_saver.contracts import (
     issued_paths,
     json_text,
 )
-from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter
+from pyodide_file_saver.openwebui_adapter import EventCall, OpenWebUIAdapter
 from pyodide_file_saver.tool import Tools
 
 
@@ -123,8 +123,11 @@ class Provider:
 class BrowserReply:
     """A callback fixture, not a Python executor or a real-browser acceptance test."""
 
-    def __init__(self, files: list[FileBytes], outcome: str = "ok") -> None:
+    def __init__(
+        self, files: list[FileBytes], outcome: str = "ok", *, runtime_id: str = ""
+    ) -> None:
         self.files, self.outcome = files, outcome
+        self.runtime_id = runtime_id
         self.calls = 0
         self.configs: list[dict[str, JsonValue]] = []
         self.restored: list[list[FileBytes]] = []
@@ -153,14 +156,15 @@ class BrowserReply:
                 config = parsed
         assert config is not None and isinstance(config["restore"], list)
         self.configs.append(config)
-        if config.get("phase") == "prepare":
+        if config.get("phase") in {"prepare", "probe"}:
             return {
                 "result": json_text(
                     {
                         "version": 2,
-                        "operation_id": data["id"],
+                        "operation_id": config["operation_id"],
                         "nonce": config["nonce"],
-                        "phase": "prepare",
+                        "phase": config["phase"],
+                        "runtime_id": self.runtime_id,
                         "warm": False,
                         "shell_ready": False,
                     }
@@ -175,9 +179,10 @@ class BrowserReply:
                 "result": json_text(
                     {
                         "version": 2,
-                        "operation_id": data["id"],
+                        "operation_id": config["operation_id"],
                         "nonce": config["nonce"],
                         "phase": "restore",
+                        "runtime_id": self.runtime_id,
                     }
                 )
             }
@@ -194,12 +199,13 @@ class BrowserReply:
                 {
                     "version": 2,
                     "phase": config.get("phase", "execute"),
+                    "runtime_id": self.runtime_id,
                     "manifest": []
                     if completion_only
                     else [file.manifest().model_dump() for file in self.files],
                     "execution_completed": True,
                     "exit_code": 0 if self.outcome == "ok" else 1,
-                    "operation_id": data["id"],
+                    "operation_id": config["operation_id"],
                     "nonce": config["nonce"],
                     "outcome": "ok" if self.outcome == "ok" else "execution_error",
                     "stdout": "synthetic output",
@@ -378,7 +384,7 @@ class HostHarness:
 
     async def call(
         self,
-        browser: BrowserReply | None = None,
+        browser: EventCall | None = None,
         *,
         action: str = "execute",
         operation_id: str = "",

@@ -61,7 +61,8 @@ raw host/provider errors are not returned.
 `not_started` for a recorded pre-dispatch failure, `unknown` when execution might
 have started, or `completed` after a received completion acknowledgement. It lists
 applicable `tool_actions`, `next_step` and `needs_browser`. A pre-dispatch failure
-also sets `needs_new_request`: the old callback cannot switch browser sessions.
+also sets `needs_new_request` when automatic pre-dispatch reconnection cannot
+establish the original runtime. Already-sent mutable callbacks are never replayed.
 Completion is persisted before a separate source-free snapshot callback. This
 does not make browser memory durable or establish completion when its reply is lost.
 
