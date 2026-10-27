@@ -11,7 +11,7 @@ host/provider before enabling the Tool for users.
 
 | Area | Required behavior |
 | --- | --- |
-| Database | Async SQLAlchemy engine and shared ORM metadata; PostgreSQL or local-disk SQLite; permission to create four Tool tables |
+| Database | Async SQLAlchemy engine and shared ORM metadata; PostgreSQL or local-disk SQLite; permission to create five Tool tables |
 | Host models | Compatible File, Chat, ChatFile and normalized ChatMessage fields, types and identities |
 | Authorization | Async user lookup, live chat-write checks, native file-access checks and genuine injected actor/chat/assistant/request context |
 | Storage | Compatible synchronous provider upload/read methods and normal authenticated download routes |
@@ -122,6 +122,17 @@ these exact bytes. The earlier a4 evidence remains scoped to that artifact.
 
 ## Version-sensitive integration
 
+Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3
+authenticated session-pool and event-factory contracts and a bound native task
+generation. Other hosts retain their injected callback and normal failure path.
+The candidate must match the original runtime UUID, not merely the user/chat.
+It does not resume unknown execution or recover a terminated/reloaded worker.
+Native qualification for this feature must be recorded separately from callback
+fixtures and the standalone Chromium wrapper test.
+Reconnection stays within the configured callback timeout, probes at most eight
+sessions and waits at most five seconds per candidate. A timed-out candidate is
+not retried within that attempt; an inactive tab can therefore remain unavailable.
+
 `execute:python` is checked against upstream source, but is not documented as a
 stable extension API. Recheck it when upgrading Open WebUI. Filesystem/bootstrap
 code uses public Pyodide APIs and the public npm `just-bash/browser` export.
@@ -132,6 +143,12 @@ and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.
 Source inspection is not runtime acceptance for every host.
 
 ## Saved-data compatibility
+
+**0.2.0a6:** adds one Tool-owned browser-continuity table without changing the
+four earlier tables or receipt JSON. Earlier a5 readers ignore that additional
+table and retain saved-data access; they do not implement automatic reconnect.
+Preserve the extra table during rollback. Runtime UUIDs describe continuity,
+not authenticated execution evidence or a new access-control authority.
 
 **0.2.0a5:** preserves a4 receipt/table formats. New executions acknowledge
 completion before a separate source-free snapshot callback. Recovery instructions

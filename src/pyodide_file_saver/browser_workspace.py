@@ -24,6 +24,7 @@ class WorkspaceReply(StrictModel):
     operation_id: str
     nonce: str
     phase: str
+    runtime_id: str = ""
     warm: bool = False
     shell_ready: bool = False
     outcome: str = "ok"
@@ -43,18 +44,27 @@ async def __FUNCTION__():
     import json as jsn
     cfg = jsn.loads(__CONFIG__)
     import os, stat, base64, hashlib, io, contextlib, traceback, ast, inspect, sys
+    from uuid import uuid4
+    runtime_id = getattr(bi, "_pyodide_file_saver_runtime_id", None)
+    if runtime_id is None:
+        runtime_id = str(uuid4())
+        bi._pyodide_file_saver_runtime_id = runtime_id
     cache = getattr(bi, "_pyodide_file_saver_workspaces", {})
     bi._pyodide_file_saver_workspaces = cache
     state = cache.get(cfg["key"])
     warm = bool(state and state["head"] == cfg["head"] and os.path.isdir(state["root"]))
     def response(**values):
         body = dict(version=2, operation_id=cfg["operation_id"],
-            nonce=cfg["nonce"], phase=cfg["phase"])
+            nonce=cfg["nonce"], phase=cfg["phase"], runtime_id=runtime_id)
         body.update(values)
         text = jsn.dumps(body, ensure_ascii=True, separators=(",", ":"))
         if len(text.encode()) + 1024 > cfg["limits"]["max_envelope_bytes"]:
             raise ValueError("Retained delta exceeds callback limit")
         return text
+    if cfg["phase"] == "probe":
+        return response()
+    if cfg.get("runtime_id") and cfg["runtime_id"] != runtime_id:
+        return response(outcome="runtime_changed")
     from pyodide.code import run_js
     shell_ready = bool(run_js("Boolean(globalThis.__pyodideFileSaverShell && "
         "globalThis.__pyodideFileSaverShell.version === 'just-bash@3.6.0/workspace@2')"))
@@ -345,6 +355,10 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
         raise SaverError("Captured output exceeds configured text limit")
     if value.version != 2 or value.operation_id != operation_id or value.nonce != nonce:
         raise SaverError("Workspace callback binding is invalid")
+    if value.outcome == "runtime_changed":
+        raise BrowserFailure(
+            "Browser runtime changed before execution", "browser_runtime_changed", value.phase
+        )
     if value.outcome not in {"ok", "execution_error", "snapshot_error"}:
         raise BrowserFailure(
             "Browser workspace is busy"

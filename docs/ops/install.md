@@ -1,7 +1,7 @@
 # Install the Tool
 
 This guide is for an Open WebUI administrator. Installation adds one native Tool
-and four tables to the existing database. It does not require an execution server,
+and five tables to the existing database. It does not require an execution server,
 frontend patch or separate database.
 
 Check [compatibility](../dev/compatibility.md), then use the installation checks
@@ -11,7 +11,7 @@ below to verify downloads, sharing and recovery.
 
 - Open WebUI with the required native Tool contracts, native function calling,
   the Pyodide engine and a connected browser for new executions.
-- PostgreSQL or local-disk SQLite, with permission to create four tables. Replicas
+- PostgreSQL or local-disk SQLite, with permission to create five tables. Replicas
   must share the database. Separate per-replica databases and network-filesystem
   SQLite are unsupported.
 - Configured file storage. Empty retained files require native local storage.

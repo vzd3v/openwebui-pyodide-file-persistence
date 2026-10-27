@@ -45,6 +45,11 @@ flags limit ordinary mistakes and overlap; they do not isolate malicious/manual
 code in that interpreter. This Tool is not a sandbox against arbitrary worker code.
 Existing same-origin Pyodide trust and browser persistence remain in place.
 
+Pre-dispatch reconnect probes only fresh authenticated sessions of the same actor
+and chat. Its browser runtime UUID identifies continuity, not authority or proof
+of execution. A matching UUID cannot grant chat/file access, clear durable gates
+or authorize replay of a program whose dispatch was already attempted.
+
 Scratch and transient logs stay in the browser. Scratch logs and captured
 stdout/stderr share a per-stream byte cap. Captured stdout/stderr return to the
 assistant as bounded text: printing sensitive content discloses it even if its

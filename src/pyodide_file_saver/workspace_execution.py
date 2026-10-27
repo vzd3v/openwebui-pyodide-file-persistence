@@ -28,7 +28,7 @@ from .contracts import (
     json_text,
     safe_relative_path,
 )
-from .openwebui_adapter import OpenWebUIAdapter
+from .openwebui_adapter import NativeBrowserConnection, OpenWebUIAdapter
 from .workspace_manifest import (
     WorkspaceManifest,
     manifest_bytes,
@@ -52,13 +52,14 @@ async def browser_call(
     config: dict[str, JsonValue],
     limits: Limits,
     session_id: JsonValue = None,
+    connection: NativeBrowserConnection | None = None,
 ) -> tuple[object, str]:
     code = config.get("code", "")
     wrapper, nonce = workspace_wrapper(config, code if isinstance(code, str) else "")
     payload: dict[str, JsonValue] = {
         "type": "execute:python",
         "data": {
-            "id": config["operation_id"],
+            "id": nonce,
             "code": wrapper,
             "files": [],
             "session_id": session_id,
@@ -69,7 +70,7 @@ async def browser_call(
     phase = str(config.get("phase", "execute"))
     try:
         async with asyncio.timeout(limits.callback_timeout_seconds):
-            raw = await event_call(payload)
+            raw = await connection.call(payload, phase) if connection else await event_call(payload)
     except TimeoutError as error:
         raise BrowserFailure(
             "Browser callback timed out; worker termination is not confirmed",
@@ -120,7 +121,9 @@ async def execute_workspace(
     session_id: JsonValue = None,
     *,
     recovering: bool = False,
+    metadata: dict[str, JsonValue] | None = None,
 ) -> Receipt:
+    connection = NativeBrowserConnection(adapter, context, metadata or {}, event_call, limits)
     config: dict[str, JsonValue] = {
         "operation_id": receipt.operation_id,
         "key": digest((context.actor_id + ":" + context.chat_id).encode()),
@@ -132,10 +135,12 @@ async def execute_workspace(
     }
     if not recovering:
         await adapter.state.mark(context, receipt.operation_id, phase="prepare")
-        raw, nonce = await browser_call(event_call, config, limits, session_id)
+        raw, nonce = await browser_call(event_call, config, limits, session_id, connection)
         prepared = workspace_reply(raw, receipt.operation_id, nonce, limits)
         if prepared.phase != "prepare":
             raise SaverError("Invalid browser prepare phase")
+        await connection.observe(prepared.runtime_id)
+        config["runtime_id"] = prepared.runtime_id
     else:
         prepared = WorkspaceReply(operation_id=receipt.operation_id, nonce="", phase="prepare")
     restore: list[FileBytes] = []
@@ -198,12 +203,15 @@ async def execute_workspace(
     config.update(additions)
 
     async def send_restore(file: FileBytes) -> None:
+        await connection.ensure_route()
         await adapter.state.mark(context, receipt.operation_id, phase="restore")
         config["phase"], config["restore"] = (
             "restore",
             JSON_VALUE.validate_python(encode_files([file])),
         )
-        response, restore_nonce = await browser_call(event_call, config, limits, session_id)
+        response, restore_nonce = await browser_call(
+            event_call, config, limits, session_id, connection
+        )
         restored = workspace_reply(response, receipt.operation_id, restore_nonce, limits)
         if restored.phase != "restore":
             raise SaverError("Invalid restore acknowledgement")
@@ -241,13 +249,15 @@ async def execute_workspace(
             saved.inputs, saved.legacy_paths = inputs, legacy
             await adapter.state.put(session, saved)
         config["defer_snapshot"] = True
+    if not recovering:
+        await connection.ensure_route()
     await adapter.state.mark(
         context,
         receipt.operation_id,
         phase="recover" if recovering else "execute",
         dispatch="possibly_running" if not recovering else None,
     )
-    raw, nonce = await browser_call(event_call, config, limits, session_id)
+    raw, nonce = await browser_call(event_call, config, limits, session_id, connection)
     reply = workspace_reply(raw, receipt.operation_id, nonce, limits)
     if reply.phase != ("recover" if recovering else "execute"):
         raise SaverError("Invalid browser execution phase")
@@ -280,7 +290,7 @@ async def execute_workspace(
         )
     if not recovering:
         config.update(phase="snapshot", code="", shell_asset="")
-        raw, nonce = await browser_call(event_call, config, limits, session_id)
+        raw, nonce = await browser_call(event_call, config, limits, session_id, connection)
         snapshot = workspace_reply(raw, receipt.operation_id, nonce, limits)
         if snapshot.phase != "snapshot":
             raise SaverError("Invalid browser snapshot phase")

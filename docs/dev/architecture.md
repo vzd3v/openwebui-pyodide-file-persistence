@@ -31,13 +31,14 @@ availability.
 
 ## Durable state
 
-Four SQLAlchemy Core tables use the existing host database:
+Five SQLAlchemy Core tables use the existing host database:
 
 - `pyodide_file_saver_workspace`: actor/chat revision and acknowledged operation.
 - `pyodide_file_saver_operation`: reserved File IDs, manifest metadata, operation
   states and bounded execution text.
 - `pyodide_file_saver_diagnostic`: dispatch phase, normalized failure and request scope.
 - `pyodide_file_saver_gate`: failed request and authenticated actor/session guards.
+- `pyodide_file_saver_browser`: actor/chat/session-hash to browser runtime continuity.
 
 Payloads live in the configured file storage. Host-owned tables and migrations
 are unchanged. Database schema version remains one; defaulted receipt fields
@@ -76,6 +77,13 @@ Pyodide instance or worker internals. The shell registers its own namespace only
 Warm execution sends no inherited retained bytes and reuses the shell bundle
 when its digest matches. Cold restoration reads and verifies one bounded File at
 a time, sends sequential restore callbacks, then executes the program once.
+
+On the inspected Open WebUI 0.12.3 socket contract, pre-dispatch reconnection
+can recognize the original interpreter by its runtime UUID. Only fresh,
+authenticated actor/chat sessions receive source-free probes; user source goes
+only to a matching runtime after a live generation/access check. Each native RPC
+uses a separate callback ID. Already-sent restore/execute/snapshot callbacks are
+never replayed. Missing continuity evidence retains ordinary failure handling.
 
 A pending root is bound to its operation before mutation. Interleaved operations
 cannot reuse it as the previous acknowledged head; they fail or use separate roots.

@@ -42,7 +42,8 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             "instructions": (
                 "This program was not dispatched. Explain the connection failure and keep "
                 "earlier results. After reconnecting, a new user request may execute the "
-                "program from the acknowledged head. This callback cannot switch sessions."
+                "program from the acknowledged head. Automatic reconnect could not establish "
+                "the original runtime."
             ),
         }
     return {

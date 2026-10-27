@@ -418,6 +418,7 @@ class Tools:
                     blocked_modules,
                     (__metadata__ or {}).get("session_id"),
                     recovering=call.action == "recover",
+                    metadata=__metadata__ or {},
                 )
                 receipt = await resume_publication(
                     adapter, context, receipt.operation_id, limits, read_blobs=False
