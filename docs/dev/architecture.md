@@ -85,6 +85,13 @@ only to a matching runtime after a live generation/access check. Each native RPC
 uses a separate callback ID. Already-sent restore/execute/snapshot callbacks are
 never replayed. Missing continuity evidence retains ordinary failure handling.
 
+For a known interpreter, a short preparation deadline reserves time inside the
+existing callback limit for discovery even when an obsolete session appears live.
+Cold startup keeps the full limit. Previously recognized replacement sessions
+are preferred across calls, but each replacement must answer a fresh runtime
+probe. Callback cancellation cleanup is bounded; pending cleanup is retained and
+saturation refuses further callbacks instead of accumulating unbounded tasks.
+
 A pending root is bound to its operation before mutation. Interleaved operations
 cannot reuse it as the previous acknowledged head; they fail or use separate roots.
 A runtime busy flag limits ordinary browser overlap. Database compare-and-set is

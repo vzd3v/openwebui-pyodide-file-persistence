@@ -81,6 +81,9 @@ Socket-boundary fixtures also check pre-dispatch reconnection against runtime
 identity, actor/chat/session freshness, generation replacement and cancellation.
 They reject replay after restore/execute dispatch. These are synthetic host
 boundaries; native reconnect qualification still needs a real served frontend.
+The matrix includes a stale session that remains present while its callback
+stalls, delayed cancellation, replacement reuse on the next call, mismatched
+runtimes and cancellation during discovery.
 
 ## What CI establishes
 

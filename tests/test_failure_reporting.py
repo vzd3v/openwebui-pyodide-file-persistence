@@ -224,6 +224,9 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             with pytest.raises(WorkspaceInvocationStopped):
                 await fail_browser()
             assert len(persisted) == 1 and persisted[0]["error"]
+            saved_error = persisted[0]["error"]
+            assert isinstance(saved_error, dict)
+            assert str(saved_error["content"]).startswith("The program did not start.")
             async with host.engine.connect() as connection:
                 row = (
                     (

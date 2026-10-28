@@ -49,6 +49,11 @@ async def generation(host: HostHarness, task: str) -> None:
         "stale_generation",
         "cancel",
         "cancel_inflight",
+        "stale_live",
+        "stale_live_slow_cancel",
+        "stale_live_wrong_runtime",
+        "stale_live_cancel",
+        "cold_prepare",
     ],
 )
 def test_reconnect_requires_original_runtime_and_never_replays_user_code(
@@ -70,13 +75,16 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
             requests: list[tuple[str, str]] = []
             probed = asyncio.Event()
             cancelled = asyncio.Event()
+            stale_started = asyncio.Event()
+            attempts: list[tuple[str, str]] = []
             armed = False
 
             def session(actor: str = "actor-a", chat: str = "chat-a") -> dict[str, object]:
                 return {"id": actor, "chat_ids": [chat], "last_seen_at": time.time()}
 
             def reconnect() -> None:
-                pool.pop("old", None)
+                if not interruption.startswith("stale_live"):
+                    pool.pop("old", None)
                 pool["wrong"] = session()
                 if interruption == "foreign_actor":
                     pool["new"] = session(actor="actor-b")
@@ -84,7 +92,7 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                     pool["new"] = session(chat="chat-b")
                 elif interruption == "expired":
                     pool["new"] = {**session(), "last_seen_at": 0}
-                elif interruption not in {"wrong_runtime", "cancel"}:
+                elif interruption not in {"wrong_runtime", "cancel", "stale_live_wrong_runtime"}:
                     pool["new"] = session()
 
             async def factory(info: dict[str, JsonValue]) -> EventCall:
@@ -93,10 +101,23 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                 async def callback(payload: dict[str, JsonValue]) -> object:
                     data = payload["data"]
                     assert isinstance(data, dict) and data["session_id"] == sid
+                    if armed and interruption.startswith("stale_live") and sid == "old":
+                        attempts.append((sid, "stalled"))
+                        stale_started.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except asyncio.CancelledError:
+                            if interruption == "stale_live_slow_cancel":
+                                await asyncio.sleep(0.6)
+                            cancelled.set()
+                            raise
                     browser = wrong if sid == "wrong" else original
                     raw = await browser(payload)
                     config = browser.configs[-1]
                     phase = str(config["phase"])
+                    attempts.append((sid, phase))
+                    if interruption == "cold_prepare" and phase == "prepare":
+                        await asyncio.sleep(0.5)
                     if armed and interruption == "cancel_inflight" and phase == "prepare":
                         probed.set()
                         try:
@@ -141,19 +162,28 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
             metadata: dict[str, JsonValue] = {"session_id": "old", "task_id": task}
             injected = await factory({"session_id": "old"})
             first_operation = ""
-            if interruption != "unknown":
+            if interruption not in {"unknown", "cold_prepare"}:
                 first = await host.call(injected, metadata=metadata)
                 assert first["state"] == "published"
                 first_operation = str(first["operation_id"])
                 assert original.calls == 1
             armed = True
-            if interruption not in {"restore", "restore_lost", "execute", "cancel_inflight"}:
+            if interruption not in {
+                "restore",
+                "restore_lost",
+                "execute",
+                "cancel_inflight",
+                "cold_prepare",
+            }:
                 reconnect()
             tool = Tools()
             tool.valves.callback_timeout_seconds = 1
             pending = asyncio.create_task(host.call(injected, metadata=metadata, tool=tool))
-            if interruption in {"cancel", "cancel_inflight"}:
-                await asyncio.wait_for(probed.wait(), timeout=2)
+            if interruption in {"cancel", "cancel_inflight", "stale_live_cancel"}:
+                await asyncio.wait_for(
+                    stale_started.wait() if interruption == "stale_live_cancel" else probed.wait(),
+                    timeout=2,
+                )
                 pending.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await pending
@@ -167,10 +197,14 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                 assert latest.failure_code == "invocation_cancelled"
                 return
             result = await pending
+            if interruption == "cold_prepare":
+                assert result["state"] == "published" and original.calls == 1
+                assert not any(sid != "old" for sid, _ in requests)
+                return
             assert wrong.calls == 0
             assert all(c["phase"] == "probe" for c in wrong.configs)
             assert len({identity for _, identity in requests}) == len(requests)
-            if interruption in {"prepare", "restore"}:
+            if interruption in {"prepare", "restore", "stale_live", "stale_live_slow_cancel"}:
                 assert result["state"] == "published"
                 assert original.calls == 2
                 assert any(sid == "new" for sid, _ in requests)
@@ -182,6 +216,14 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                     )
                     == runtime
                 )
+                if interruption.startswith("stale_live"):
+                    # A new call still receives the original injected SID. A known
+                    # replacement is probed first instead of waiting on it again.
+                    old_attempts = attempts.count(("old", "stalled"))
+                    continued = await host.call(injected, metadata=metadata, tool=tool)
+                    assert continued["state"] == "published" and original.calls == 3
+                    assert attempts.count(("old", "stalled")) == old_attempts
+                    await asyncio.wait_for(cancelled.wait(), timeout=1)
             else:
                 assert result["incomplete"]
                 assert original.calls == (
