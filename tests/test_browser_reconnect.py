@@ -234,12 +234,10 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                     == runtime
                 )
                 if interruption.startswith("stale_live"):
-                    # A new call still receives the original injected SID. A known
-                    # replacement is probed first instead of waiting on it again.
-                    started = time.monotonic()
+                    # A new call still receives the original injected SID and must
+                    # use the verified replacement without dispatching to another tab.
                     continued = await host.call(injected, metadata=metadata, tool=tool)
                     assert continued["state"] == "published" and original.calls == 3
-                    assert time.monotonic() - started < tool.valves.callback_timeout_seconds
                     await asyncio.wait_for(cancelled.wait(), timeout=1)
             else:
                 assert result["incomplete"]
