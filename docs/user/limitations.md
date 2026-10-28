@@ -6,6 +6,8 @@ to a server or create a background job. On a qualified Open WebUI 0.12.3 host,
 the Tool can reconnect before program dispatch if it recognizes the original
 interpreter in an authenticated session. A reloaded worker, an unrelated tab or
 missing continuity evidence cannot replace that interpreter automatically.
+Preparation can also recover when the old session still appears connected but
+does not answer. This does not extend the callback deadline or replay execution.
 
 ## What survives
 

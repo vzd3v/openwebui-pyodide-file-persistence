@@ -130,6 +130,24 @@ class WorkspaceState:
                 )
             )
 
+    async def browser_sessions(
+        self, context: BoundContext, runtime_id: str, session_keys: list[str]
+    ) -> set[str]:
+        """Prior continuity is a routing hint; every replacement still needs a probe."""
+        if not session_keys:
+            return set()
+        async with self.sessions() as session:
+            return set(
+                await session.scalars(
+                    select(self.browser.c.session_key).where(
+                        self.browser.c.actor_id == context.actor_id,
+                        self.browser.c.chat_id == context.chat_id,
+                        self.browser.c.runtime_id == runtime_id,
+                        self.browser.c.session_key.in_(session_keys),
+                    )
+                )
+            )
+
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AsyncSession]:
         async with self.sessions() as session:

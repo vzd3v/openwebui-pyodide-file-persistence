@@ -103,6 +103,27 @@ class HostSessionPool(Protocol):
 BROWSER_POLL_SECONDS = 1
 BROWSER_PROBE_SECONDS = 5
 BROWSER_PROBE_CANDIDATES = 8
+BROWSER_DRAIN_SECONDS = 0.1
+BROWSER_MAX_PENDING_CALLBACKS = 64
+_pending_callbacks: set[asyncio.Future[object]] = set()
+
+
+def consume_callback(task: asyncio.Future[object]) -> None:
+    _pending_callbacks.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def cancel_callbacks(*tasks: asyncio.Future[object]) -> None:
+    pending: set[asyncio.Future[object]] = set()
+    for task in tasks:
+        task.add_done_callback(consume_callback)
+        if not task.done():
+            _pending_callbacks.add(task)
+            task.cancel()
+            pending.add(task)
+    if pending:
+        await asyncio.wait(pending, timeout=BROWSER_DRAIN_SECONDS)
 
 
 class NativeBrowserConnection:
@@ -121,7 +142,8 @@ class NativeBrowserConnection:
         limits: Limits,
     ) -> None:
         self.adapter, self.context, self.metadata = adapter, context, metadata
-        self.event_call, self.limits = event_call, limits
+        self.event_call: EventCall = event_call
+        self.limits = limits
         session = metadata.get("session_id")
         self.session_id = session if isinstance(session, str) and 0 < len(session) <= 256 else ""
         self.runtime_id = ""
@@ -191,7 +213,13 @@ class NativeBrowserConnection:
     ) -> object:
         if not self.live(sid):
             raise BrowserFailure("Browser session is unavailable", "session_disconnected", phase)
+        if len(_pending_callbacks) >= BROWSER_MAX_PENDING_CALLBACKS:
+            raise BrowserFailure(
+                "Browser callback cleanup is saturated", "browser_callback_timeout", phase
+            )
         pending = asyncio.ensure_future(callback(payload))
+        _pending_callbacks.add(pending)
+        pending.add_done_callback(consume_callback)
         try:
             while True:
                 done, _ = await asyncio.wait({pending}, timeout=BROWSER_POLL_SECONDS)
@@ -202,9 +230,9 @@ class NativeBrowserConnection:
                         "Browser session is unavailable", "session_disconnected", phase
                     )
         finally:
-            if not pending.done():
-                pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
+            # A host callback may delay cancellation while draining a socket write.
+            # Its cleanup cannot consume the entire recovery budget or block Stop.
+            await cancel_callbacks(pending)
 
     def probe_request(self, sid: str) -> tuple[dict[str, JsonValue], str, str]:
         operation_id = str(uuid4())
@@ -226,67 +254,140 @@ class NativeBrowserConnection:
             nonce,
         )
 
+    async def candidates(self, tested: set[str]) -> tuple[list[str], set[str]]:
+        if self.batches is None:
+            return [], set()
+        sessions = {
+            sid: session
+            for batch in self.batches()
+            for sid, session in batch
+            if sid not in tested and self.live(sid, chat=True)
+        }
+        known = await self.adapter.state.browser_sessions(
+            self.context, self.runtime_id, [self.session_key(sid) for sid in sessions]
+        )
+        ranked = sorted(
+            sessions,
+            key=lambda sid: (
+                self.session_key(sid) in known,
+                cast(float, sessions[sid]["last_seen_at"]),
+            ),
+            reverse=True,
+        )
+        return ranked[: max(0, BROWSER_PROBE_CANDIDATES - len(tested))], known
+
+    async def probe_route(self, sid: str) -> EventCall | None:
+        if self.factory is None:
+            return None
+        await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+        callback = await self.factory(
+            {
+                "session_id": sid,
+                "user_id": self.context.actor_id,
+                "chat_id": self.context.chat_id,
+                "message_id": self.context.message_id,
+            }
+        )
+        if callback is None:
+            return None
+        probe, operation_id, nonce = self.probe_request(sid)
+        try:
+            async with asyncio.timeout(
+                min(BROWSER_PROBE_SECONDS, self.limits.callback_timeout_seconds / 3)
+            ):
+                raw = await self.invoke(callback, probe, sid, "probe")
+            reply = workspace_reply(raw, operation_id, nonce, self.limits)
+        except (TimeoutError, SaverError):
+            return None
+        if reply.phase != "probe" or reply.runtime_id != self.runtime_id:
+            return None
+        await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+        return callback
+
+    async def find_route(self, tested: set[str]) -> tuple[str, EventCall]:
+        while True:
+            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+            candidates, _ = await self.candidates(tested)
+            for sid in candidates:
+                tested.add(sid)
+                callback = await self.probe_route(sid)
+                if callback is not None:
+                    return sid, callback
+            await asyncio.sleep(BROWSER_POLL_SECONDS)
+
     async def call(self, payload: dict[str, JsonValue], phase: str) -> object:
         if self.pool is None or self.batches is None or self.factory is None:
             return await self.event_call(payload)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise SaverError("Invalid native browser request")
-        data["session_id"] = self.session_id
-        try:
+        if phase != "prepare":
+            data["session_id"] = self.session_id
             raw = await self.invoke(self.event_call, payload, self.session_id, phase)
             OpenWebUIAdapter.classify_callback(raw, phase)
             return raw
-        except BrowserFailure:
-            if phase != "prepare" or self.live(self.session_id):
-                raise
         if not self.runtime_id:
             self.runtime_id = await self.adapter.state.browser_runtime(
                 self.context, self.session_key(self.session_id)
             )
+        data["session_id"] = self.session_id
         if not self.runtime_id:
-            raise BrowserFailure("Browser session is unavailable", "session_disconnected", phase)
-        tested: set[str] = set()
-        while True:
-            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
-            candidates = [
-                sid
-                for batch in self.batches()
-                for sid, _ in batch
-                if sid not in tested and self.live(sid, chat=True)
-            ][: max(0, BROWSER_PROBE_CANDIDATES - len(tested))]
-            for sid in candidates:
-                tested.add(sid)
-                callback = await self.factory(
-                    {
-                        "session_id": sid,
-                        "user_id": self.context.actor_id,
-                        "chat_id": self.context.chat_id,
-                        "message_id": self.context.message_id,
-                    }
-                )
-                if callback is None:
-                    continue
-                probe, operation_id, nonce = self.probe_request(sid)
+            raw = await self.invoke(self.event_call, payload, self.session_id, phase)
+            OpenWebUIAdapter.classify_callback(raw, phase)
+            return raw
+        # A stored UUID can outlive a restarted worker. Keep the original read-only
+        # call alive for its full deadline, racing discovery rather than cancelling
+        # legitimate cold initialization after the short discovery trigger.
+        original = asyncio.ensure_future(
+            self.invoke(self.event_call, payload, self.session_id, phase)
+        )
+        discovery: asyncio.Task[tuple[str, EventCall]] | None = None
+        try:
+            candidates, known = await self.candidates({self.session_id})
+            delay = (
+                0
+                if any(self.session_key(sid) in known for sid in candidates)
+                else min(BROWSER_PROBE_SECONDS, self.limits.callback_timeout_seconds / 3)
+            )
+            await asyncio.wait({original}, timeout=delay)
+            original_failed = False
+            if original.done():
                 try:
-                    async with asyncio.timeout(BROWSER_PROBE_SECONDS):
-                        raw = await self.invoke(callback, probe, sid, "probe")
-                    reply = workspace_reply(raw, operation_id, nonce, self.limits)
-                except (TimeoutError, SaverError):
-                    continue
-                if reply.phase != "probe" or reply.runtime_id != self.runtime_id:
-                    continue
-                await self.adapter.validate_generation(
-                    self.context, self.metadata, require_task=True
-                )
-                self.session_id, self.event_call = sid, callback
-                self.reconnected = True
-                await self.observe(reply.runtime_id)
-                data["session_id"] = sid
-                raw = await self.invoke(callback, payload, sid, phase)
-                OpenWebUIAdapter.classify_callback(raw, phase)
-                return raw
-            await asyncio.sleep(BROWSER_POLL_SECONDS)
+                    raw = original.result()
+                    OpenWebUIAdapter.classify_callback(raw, phase)
+                    return raw
+                except BrowserFailure:
+                    original_failed = True
+            discovery = asyncio.create_task(self.find_route({self.session_id}))
+            while True:
+                waiting: set[asyncio.Future[object]] = {cast(asyncio.Future[object], discovery)}
+                if not original_failed:
+                    waiting.add(original)
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if original in done:
+                    try:
+                        raw = original.result()
+                        OpenWebUIAdapter.classify_callback(raw, phase)
+                        return raw
+                    except BrowserFailure:
+                        original_failed = True
+                if discovery in done:
+                    break
+            sid, callback = discovery.result()
+            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+            await cancel_callbacks(original)
+            self.session_id, self.event_call = sid, callback
+            self.reconnected = True
+            await self.observe(self.runtime_id)
+            data["session_id"] = sid
+            raw = await self.invoke(callback, payload, sid, phase)
+            OpenWebUIAdapter.classify_callback(raw, phase)
+            return raw
+        finally:
+            await cancel_callbacks(
+                original,
+                *([cast(asyncio.Future[object], discovery)] if discovery is not None else []),
+            )
 
     async def ensure_route(self) -> None:
         """Reconnect before mutation; never replay an already-sent mutable callback."""
@@ -428,9 +529,16 @@ class OpenWebUIAdapter:
         metadata: dict[str, JsonValue],
         diagnostic: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
+        receipt = diagnostic.get("receipt")
+        not_started = (
+            isinstance(receipt, dict) and receipt.get("execution_outcome") == "not_started"
+        )
         error: dict[str, JsonValue] = {
             "content": (
-                "Browser execution is unavailable. Inspect operation status before continuing."
+                "The program did not start. Reconnect the browser and send a new message "
+                "to continue from the last saved workspace."
+                if not_started
+                else "Browser execution is unavailable. Inspect operation status before continuing."
             ),
             "type": "workspace_executor_unavailable",
             "diagnostic": diagnostic,
