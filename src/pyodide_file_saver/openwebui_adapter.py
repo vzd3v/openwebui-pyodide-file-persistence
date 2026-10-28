@@ -114,6 +114,18 @@ def consume_callback(task: asyncio.Future[object]) -> None:
         task.exception()
 
 
+async def cancel_callbacks(*tasks: asyncio.Future[object]) -> None:
+    pending: set[asyncio.Future[object]] = set()
+    for task in tasks:
+        task.add_done_callback(consume_callback)
+        if not task.done():
+            _pending_callbacks.add(task)
+            task.cancel()
+            pending.add(task)
+    if pending:
+        await asyncio.wait(pending, timeout=BROWSER_DRAIN_SECONDS)
+
+
 class NativeBrowserConnection:
     """Rebind control calls only after recognizing the original live runtime.
 
@@ -130,7 +142,8 @@ class NativeBrowserConnection:
         limits: Limits,
     ) -> None:
         self.adapter, self.context, self.metadata = adapter, context, metadata
-        self.event_call, self.limits = event_call, limits
+        self.event_call: EventCall = event_call
+        self.limits = limits
         session = metadata.get("session_id")
         self.session_id = session if isinstance(session, str) and 0 < len(session) <= 256 else ""
         self.runtime_id = ""
@@ -219,9 +232,7 @@ class NativeBrowserConnection:
         finally:
             # A host callback may delay cancellation while draining a socket write.
             # Its cleanup cannot consume the entire recovery budget or block Stop.
-            if not pending.done():
-                pending.cancel()
-                await asyncio.wait({pending}, timeout=BROWSER_DRAIN_SECONDS)
+            await cancel_callbacks(pending)
 
     def probe_request(self, sid: str) -> tuple[dict[str, JsonValue], str, str]:
         operation_id = str(uuid4())
@@ -265,9 +276,9 @@ class NativeBrowserConnection:
         )
         return ranked[: max(0, BROWSER_PROBE_CANDIDATES - len(tested))], known
 
-    async def bind_route(self, sid: str) -> bool:
+    async def probe_route(self, sid: str) -> EventCall | None:
         if self.factory is None:
-            return False
+            return None
         await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
         callback = await self.factory(
             {
@@ -278,7 +289,7 @@ class NativeBrowserConnection:
             }
         )
         if callback is None:
-            return False
+            return None
         probe, operation_id, nonce = self.probe_request(sid)
         try:
             async with asyncio.timeout(
@@ -287,14 +298,22 @@ class NativeBrowserConnection:
                 raw = await self.invoke(callback, probe, sid, "probe")
             reply = workspace_reply(raw, operation_id, nonce, self.limits)
         except (TimeoutError, SaverError):
-            return False
+            return None
         if reply.phase != "probe" or reply.runtime_id != self.runtime_id:
-            return False
+            return None
         await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
-        self.session_id, self.event_call = sid, callback
-        self.reconnected = True
-        await self.observe(reply.runtime_id)
-        return True
+        return callback
+
+    async def find_route(self, tested: set[str]) -> tuple[str, EventCall]:
+        while True:
+            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+            candidates, _ = await self.candidates(tested)
+            for sid in candidates:
+                tested.add(sid)
+                callback = await self.probe_route(sid)
+                if callback is not None:
+                    return sid, callback
+            await asyncio.sleep(BROWSER_POLL_SECONDS)
 
     async def call(self, payload: dict[str, JsonValue], phase: str) -> object:
         if self.pool is None or self.batches is None or self.factory is None:
@@ -311,44 +330,64 @@ class NativeBrowserConnection:
             self.runtime_id = await self.adapter.state.browser_runtime(
                 self.context, self.session_key(self.session_id)
             )
-        tested: set[str] = set()
-        if self.runtime_id:
-            # New Tool calls inherit the request's original SID. Prefer a replacement
-            # recognized by an earlier call, but never trust the saved mapping alone.
-            candidates, known = await self.candidates({self.session_id})
-            for sid in candidates:
-                if self.session_key(sid) in known:
-                    tested.add(sid)
-                    if await self.bind_route(sid):
-                        break
         data["session_id"] = self.session_id
-        try:
-            # Cold startup needs the full deadline. A known interpreter's preparation
-            # must leave time for discovery even while its obsolete SID appears live.
-            timeout = (
-                min(BROWSER_PROBE_SECONDS, self.limits.callback_timeout_seconds / 3)
-                if self.runtime_id
-                else None
-            )
-            async with asyncio.timeout(timeout):
-                raw = await self.invoke(self.event_call, payload, self.session_id, phase)
+        if not self.runtime_id:
+            raw = await self.invoke(self.event_call, payload, self.session_id, phase)
             OpenWebUIAdapter.classify_callback(raw, phase)
             return raw
-        except (TimeoutError, BrowserFailure):
-            if not self.runtime_id:
-                raise
-        tested.add(self.session_id)
-        while True:
-            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
-            candidates, _ = await self.candidates(tested)
-            for sid in candidates:
-                tested.add(sid)
-                if await self.bind_route(sid):
-                    data["session_id"] = sid
-                    raw = await self.invoke(self.event_call, payload, sid, phase)
+        # A stored UUID can outlive a restarted worker. Keep the original read-only
+        # call alive for its full deadline, racing discovery rather than cancelling
+        # legitimate cold initialization after the short discovery trigger.
+        original = asyncio.ensure_future(
+            self.invoke(self.event_call, payload, self.session_id, phase)
+        )
+        discovery: asyncio.Task[tuple[str, EventCall]] | None = None
+        try:
+            candidates, known = await self.candidates({self.session_id})
+            delay = (
+                0
+                if any(self.session_key(sid) in known for sid in candidates)
+                else min(BROWSER_PROBE_SECONDS, self.limits.callback_timeout_seconds / 3)
+            )
+            await asyncio.wait({original}, timeout=delay)
+            original_failed = False
+            if original.done():
+                try:
+                    raw = original.result()
                     OpenWebUIAdapter.classify_callback(raw, phase)
                     return raw
-            await asyncio.sleep(BROWSER_POLL_SECONDS)
+                except BrowserFailure:
+                    original_failed = True
+            discovery = asyncio.create_task(self.find_route({self.session_id}))
+            while True:
+                waiting: set[asyncio.Future[object]] = {cast(asyncio.Future[object], discovery)}
+                if not original_failed:
+                    waiting.add(original)
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if original in done:
+                    try:
+                        raw = original.result()
+                        OpenWebUIAdapter.classify_callback(raw, phase)
+                        return raw
+                    except BrowserFailure:
+                        original_failed = True
+                if discovery in done:
+                    break
+            sid, callback = discovery.result()
+            await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
+            await cancel_callbacks(original)
+            self.session_id, self.event_call = sid, callback
+            self.reconnected = True
+            await self.observe(self.runtime_id)
+            data["session_id"] = sid
+            raw = await self.invoke(callback, payload, sid, phase)
+            OpenWebUIAdapter.classify_callback(raw, phase)
+            return raw
+        finally:
+            await cancel_callbacks(
+                original,
+                *([cast(asyncio.Future[object], discovery)] if discovery is not None else []),
+            )
 
     async def ensure_route(self) -> None:
         """Reconnect before mutation; never replay an already-sent mutable callback."""

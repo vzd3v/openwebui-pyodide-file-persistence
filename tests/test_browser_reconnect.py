@@ -54,6 +54,8 @@ async def generation(host: HostHarness, task: str) -> None:
         "stale_live_wrong_runtime",
         "stale_live_cancel",
         "cold_prepare",
+        "cold_reset",
+        "cold_reset_slow_candidate",
     ],
 )
 def test_reconnect_requires_original_runtime_and_never_replays_user_code(
@@ -118,6 +120,11 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                     attempts.append((sid, phase))
                     if interruption == "cold_prepare" and phase == "prepare":
                         await asyncio.sleep(0.5)
+                    if armed and interruption.startswith("cold_reset"):
+                        if sid == "old" and phase == "prepare":
+                            await asyncio.sleep(0.5)
+                        if sid == "wrong" and phase == "probe":
+                            await asyncio.Event().wait()
                     if armed and interruption == "cancel_inflight" and phase == "prepare":
                         probed.set()
                         try:
@@ -174,8 +181,14 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                 "execute",
                 "cancel_inflight",
                 "cold_prepare",
+                "cold_reset",
+                "cold_reset_slow_candidate",
             }:
                 reconnect()
+            if interruption == "cold_reset_slow_candidate":
+                pool["wrong"] = session()
+            if interruption.startswith("cold_reset"):
+                original.runtime_id = str(uuid4())
             tool = Tools()
             tool.valves.callback_timeout_seconds = 1
             pending = asyncio.create_task(host.call(injected, metadata=metadata, tool=tool))
@@ -201,6 +214,10 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                 assert result["state"] == "published" and original.calls == 1
                 assert not any(sid != "old" for sid, _ in requests)
                 return
+            if interruption.startswith("cold_reset"):
+                assert result["state"] == "published" and original.calls == 2
+                assert all(sid == "old" for sid, _ in requests)
+                return
             assert wrong.calls == 0
             assert all(c["phase"] == "probe" for c in wrong.configs)
             assert len({identity for _, identity in requests}) == len(requests)
@@ -219,10 +236,10 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
                 if interruption.startswith("stale_live"):
                     # A new call still receives the original injected SID. A known
                     # replacement is probed first instead of waiting on it again.
-                    old_attempts = attempts.count(("old", "stalled"))
+                    started = time.monotonic()
                     continued = await host.call(injected, metadata=metadata, tool=tool)
                     assert continued["state"] == "published" and original.calls == 3
-                    assert attempts.count(("old", "stalled")) == old_attempts
+                    assert time.monotonic() - started < tool.valves.callback_timeout_seconds
                     await asyncio.wait_for(cancelled.wait(), timeout=1)
             else:
                 assert result["incomplete"]
