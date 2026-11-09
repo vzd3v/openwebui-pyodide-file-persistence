@@ -50,7 +50,18 @@ jobs:
       - run: uv run basedpyright
       - run: uv run python scripts/build_tool.py --check
       - run: timeout 30s uv run pytest -q -m 'not integration'
-      - run: timeout 300s uv run pytest -q -m integration
+      - name: Integration contracts
+        run: |
+          timeout 300s bash -c '
+            uv run pytest -q -m integration -k "not postgres" &
+            saver_sqlite_pid=$!
+            uv run pytest -q -m integration -k postgres &
+            saver_postgres_pid=$!
+            saver_status=0
+            wait "$saver_sqlite_pid" || saver_status=$?
+            wait "$saver_postgres_pid" || saver_status=$?
+            exit "$saver_status"
+          '
 
   browser:
     runs-on: ubuntu-latest

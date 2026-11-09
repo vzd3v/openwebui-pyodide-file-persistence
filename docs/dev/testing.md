@@ -95,6 +95,8 @@ runtimes and cancellation during discovery.
 
 CI runs formatting, lint, strict types, deterministic builds, unit and integration
 tests. Linux jobs cap unit execution at 30 seconds and integration at 5 minutes.
+Integration runs SQLite and PostgreSQL cohorts in separate concurrent processes;
+their schemas, temporary files and synthetic host modules are isolated.
 The built Tool file is exercised through initialization, publication
 and fresh restoration with a synthetic host and real SQLite/PostgreSQL.
 

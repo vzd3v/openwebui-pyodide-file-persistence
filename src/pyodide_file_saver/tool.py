@@ -49,6 +49,23 @@ SAVER_LOG = logging.getLogger("pyodide_file_saver")
 PRESENTATION_TIMEOUT_SECONDS = 2.0
 
 
+def log_stop_failure(
+    correlation: dict[str, JsonValue], operation_id: str, phase: str, error: Exception
+) -> None:
+    SAVER_LOG.warning(
+        json_text(
+            {
+                **correlation,
+                "component": "presentation",
+                "event": "native_cancellation_presentation_failed",
+                "operation": operation_id,
+                "phase": phase,
+                **exception_diagnostic(error),
+            }
+        )
+    )
+
+
 def receipt_summary(receipt: Receipt) -> dict[str, JsonValue]:
     return {
         "operation_id": receipt.operation_id,
@@ -795,21 +812,31 @@ class Tools:
                     "error_code": error.error_code,
                     "receipt": result.get("receipt"),
                 }
+                native_error: dict[str, JsonValue] | None = None
                 try:
-                    async with asyncio.timeout(3):
+                    async with asyncio.timeout(PRESENTATION_TIMEOUT_SECONDS):
                         native_error = await adapter.persist_stop(
                             context, __metadata__ or {}, diagnostic
                         )
-                        if __event_emitter__:
-                            await __event_emitter__(
-                                {
-                                    "type": "status",
-                                    "data": {
-                                        "description": native_error["content"],
-                                        "done": True,
-                                    },
-                                }
-                            )
+                except Exception as stop_error:
+                    log_stop_failure(correlation, current_operation, "persist", stop_error)
+                try:
+                    async with asyncio.timeout(PRESENTATION_TIMEOUT_SECONDS):
+                        await adapter.validate_generation(
+                            context, __metadata__ or {}, require_task=True
+                        )
+                except Exception as generation_error:
+                    log_stop_failure(correlation, current_operation, "generation", generation_error)
+                    finish(result)
+                    raise WorkspaceInvocationStopped() from None
+                if native_error is None:
+                    # Acknowledgement is required before replacing the ordinary
+                    # failed Tool result with cancellation. Its durable gate
+                    # still forbids replay; the agent can explain this result.
+                    return finish(result)
+                if __event_emitter__:
+                    try:
+                        async with asyncio.timeout(PRESENTATION_TIMEOUT_SECONDS):
                             await __event_emitter__(
                                 {
                                     "type": "chat:completion",
@@ -818,17 +845,8 @@ class Tools:
                                     },
                                 }
                             )
-                except Exception:
-                    SAVER_LOG.warning(
-                        json_text(
-                            {
-                                **correlation,
-                                "component": "presentation",
-                                "event": "native_cancellation_presentation_failed",
-                                "operation": current_operation,
-                            }
-                        )
-                    )
+                    except Exception as delivery_error:
+                        log_stop_failure(correlation, current_operation, "emit", delivery_error)
                 finish(result)  # Log the last known facts; do not return or schedule inference.
                 raise WorkspaceInvocationStopped() from None
             return finish(result)

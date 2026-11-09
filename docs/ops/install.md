@@ -23,7 +23,12 @@ see [Contributing](../../CONTRIBUTING.md).
 
 ## Install and configure
 
-1. Keep browser persistence enabled and existing browser files intact. For an
+1. Set the host environment variable `ENABLE_PYODIDE_FILE_PERSISTENCE=true` and
+   keep existing browser files intact. The inspected 0.13.3
+   [worker factory](https://github.com/open-webui/open-webui/blob/v0.13.3/src/lib/pyodide/createPyodideWorker.ts)
+   otherwise selects an opaque-origin sandbox, which is not qualified for this
+   Tool's authenticated binary transfers. Apply the variable through the host's
+   normal restart/recreate procedure, then reload the browser. For an
    existing registration, follow the [upgrade guidance](#upgrade-an-existing-tool)
    before changing it.
 2. Open [Releases](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases).
@@ -127,9 +132,10 @@ an execution is fenced. Correctable argument, new-input and dependency refusals
 can permit a corrected call. Gates do not bound model-token consumption;
 configure a finite native tool-iteration limit.
 
-`stop_on_browser_failure=true` opts into the inspected Open WebUI 0.12.3 native
-cancellation path: persist an assistant error/receipt reference, emit completion
-events and cancel the current server invocation. Unsupported versions or missing
+`stop_on_browser_failure=true` opts into the
+[inspected host contracts](../dev/compatibility.md#version-sensitive-integration):
+persist an assistant error/receipt reference, attempt a native error completion
+and cancel the current server invocation. Unsupported versions or missing
 capabilities fail before browser dispatch. Host upgrades require requalification.
 Enabled stopping also requires a canonical injected task UUID matching the stored
 assistant generation before dispatch and under the native Chat row lock.
@@ -142,6 +148,18 @@ is reserved for repeated failed browser actions or repeated blocked executes
 after that guidance. Successful source-free recovery can release the current
 request gate; failed-session guards remain. Ordinary Python errors return their
 execution result and allow correction after private checkpointing.
+
+If the native error cannot be saved but the current generation can still be
+verified, the Tool returns its ordinary error result so the assistant can explain
+it. Execution remains fenced; the host's normal tool loop can continue. If the
+generation cannot be verified, the invocation is cancelled without sending a
+possibly stale error. A failed completion event after confirmed saving does not
+undo the cancellation; reload can show the saved error. Explicit user cancellation
+and host deadlines propagate without this fallback.
+
+Saving, generation checking and sending the error each have a separate two-second
+budget. Their total can exceed two seconds; these are independent of Python and
+file-transfer deadlines.
 
 Cancellation does not stop browser code. Host output not yet appended from other
 calls in the same batch can be lost; committed Tool receipts/Files remain

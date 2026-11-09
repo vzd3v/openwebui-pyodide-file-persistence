@@ -199,13 +199,22 @@ every host. Earlier qualification remains scoped to its recorded artifact.
 
 ## Version-sensitive integration
 
-Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3
+Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3 and 0.13.3
 authenticated session-pool and event-factory contracts and a bound native task
 generation. Other hosts retain their injected callback and normal failure path.
 The candidate must match the original runtime UUID, not merely the user/chat.
 It does not resume unknown execution or recover a terminated/reloaded worker.
 Native qualification for this feature must be recorded separately from callback
 fixtures and the standalone Chromium wrapper test.
+
+The 0.13.3 integration is a source-inspected candidate; native acceptance is pending.
+Its [socket implementation](https://github.com/open-webui/open-webui/blob/v0.13.3/backend/open_webui/socket/main.py)
+retains authenticated session batches and does not automatically resend
+`execute:python` on disconnect. The
+[normalized message writer](https://github.com/open-webui/open-webui/blob/v0.13.3/backend/open_webui/models/chat_messages.py)
+retains its caller-owned transaction contract. These observations do not qualify
+frontend execution, recovery, permissions or cancellation on a served installation.
+
 Reconnection stays within the configured callback timeout, probes at most eight
 sessions and waits at most five seconds per candidate. A timed-out candidate is
 not retried within that attempt; an inactive tab can therefore remain unavailable.
@@ -248,7 +257,7 @@ receipts but ignore the new execution safeguards; disable new execution before
 rolling back. Unknown legacy operations at the current revision remain fenced;
 older operations below an acknowledged head remain historical and cannot win CAS.
 
-Optional native response stopping is restricted to the inspected 0.12.3 contract
+Optional native response stopping is restricted to the inspected 0.12.3 and 0.13.3 contracts
 and disabled by default. Ordinary native cancellation/UI behavior was observed on
 a 0.12.3 installation; pristine stock, same-batch output preservation,
 approval/resume and subagent paths are not qualified. Requalify host upgrades.

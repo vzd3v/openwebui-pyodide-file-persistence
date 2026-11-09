@@ -97,7 +97,7 @@ size, each HTTP request has a deadline and the restore stage has a total deadlin
 No native upload staging directory or browser IDBFS import is used. Legacy version-one
 checkpoints retain their original bounded restore path.
 
-On the inspected Open WebUI 0.12.3 socket contract, pre-dispatch reconnection
+On the inspected Open WebUI 0.12.3 and 0.13.3 socket contracts, pre-dispatch reconnection
 can recognize the original interpreter by its runtime UUID. Only fresh,
 authenticated actor/chat sessions receive source-free probes; user source goes
 only to a matching runtime after a live generation/access check. Each native RPC

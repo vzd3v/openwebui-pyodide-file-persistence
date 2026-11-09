@@ -67,27 +67,31 @@ def test_fallback_rechecks_live_admission_before_source_dispatch(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "interruption",
-    [
-        "prepare",
-        "restore",
-        "restore_lost",
-        "execute",
-        "unknown",
-        "wrong_runtime",
-        "foreign_actor",
-        "other_chat",
-        "expired",
-        "stale_generation",
-        "cancel",
-        "cancel_inflight",
-        "stale_live",
-        "stale_live_slow_cancel",
-        "stale_live_wrong_runtime",
-        "stale_live_cancel",
-        "cold_prepare",
-        "cold_reset",
-        "cold_reset_slow_candidate",
+    ("version", "interruption"),
+    [("0.12.3", "prepare")]
+    + [
+        ("0.13.3", interruption)
+        for interruption in (
+            "prepare",
+            "restore",
+            "restore_lost",
+            "execute",
+            "unknown",
+            "wrong_runtime",
+            "foreign_actor",
+            "other_chat",
+            "expired",
+            "stale_generation",
+            "cancel",
+            "cancel_inflight",
+            "stale_live",
+            "stale_live_slow_cancel",
+            "stale_live_wrong_runtime",
+            "stale_live_cancel",
+            "cold_prepare",
+            "cold_reset",
+            "cold_reset_slow_candidate",
+        )
     ],
 )
 def test_reconnect_requires_original_runtime_and_never_replays_user_code(
@@ -95,6 +99,7 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
     host_factory: Callable[[AsyncEngine, str | None], HostHarness],
     monkeypatch: pytest.MonkeyPatch,
     interruption: str,
+    version: str,
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
@@ -197,7 +202,7 @@ def test_reconnect_requires_original_runtime_and_never_replays_user_code(
             }.items():
                 setattr(socket, name, value)
             monkeypatch.setitem(sys.modules, "open_webui.socket.main", socket)
-            monkeypatch.setattr(sys.modules["open_webui.env"], "VERSION", "0.12.3")
+            monkeypatch.setattr(sys.modules["open_webui.env"], "VERSION", version)
             metadata: dict[str, JsonValue] = {"session_id": "old", "task_id": task}
             injected = await factory({"session_id": "old"})
             first_operation = ""
