@@ -23,12 +23,17 @@ scratch cannot resume merely because its source was saved.
 
 ## If execution or saving fails
 
-Ask the assistant to use the existing operation ID and **no code**:
+Read the failure and its `recovery_plan` before choosing the next call. Use the
+existing operation ID and **no code** for status and saving completed work;
+correctable refusals can permit a corrected execution in the same request.
 
 | Evidence | Implemented action | Limit |
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
-| Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; automatic reconnect could not establish a usable original runtime |
+| Invalid arguments, newly selected inputs or supported dependencies | Correct the indicated arguments, input selection or imports | The program did not start; do not repeat the unchanged rejected call or silently omit required input |
+| Required inherited input or saved File is unavailable | Restore access, exact bytes or the applicable limits | Input selection cannot remove acknowledged inputs; reconnecting alone cannot repair deleted or changed Files |
+| Browser preparation cannot establish the original runtime before dispatch | Explain the connection failure; reconnect before a new user request | The program did not start; preserve the acknowledged head |
+| Program error with an acknowledged private checkpoint | Correct the program and execute the correction | Error-produced files stay private; if saving failed, finish recovery first |
 | Native upload response lost, all file blobs uploaded, or manifest/publication interrupted | `retry` | Discovers native uploads by their reserved keys, verifies bytes/access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |

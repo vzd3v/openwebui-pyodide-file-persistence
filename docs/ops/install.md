@@ -110,11 +110,20 @@ fractions, exponent notation, booleans and out-of-range values are rejected.
 The stopping setting requires an actual boolean. Unknown fields are rejected.
 Each field's description states its units.
 
+## Upgrade an existing Tool
+
+Back up the database and Files, verify the new release asset, then update the
+existing registration in place. Preserve its access grants and saved Valve
+values; source defaults do not replace them. Review the [limits and rollback
+compatibility](#limits), then repeat the [installation checks](#check-your-installation)
+before making the update available to users.
+
 ## Native response stopping
 
-Durable request/session gates always prevent repeated dispatch and receipt growth
-after failure. They do not bound model-token consumption. Configure a finite
-native tool-iteration limit.
+Durable request/session gates prevent new dispatch and receipt allocation when
+an execution is fenced. Correctable argument, new-input and dependency refusals
+can permit a corrected call. Gates do not bound model-token consumption;
+configure a finite native tool-iteration limit.
 
 `stop_on_browser_failure=true` opts into the inspected Open WebUI 0.12.3 native
 cancellation path: persist an assistant error/receipt reference, emit completion

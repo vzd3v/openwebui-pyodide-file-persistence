@@ -78,8 +78,10 @@ content through other tools, attachment processing or printed output.
 
 ## When something fails
 
-Use the existing operation ID with `status`, `retry` or `recover` as appropriate;
-do not automatically rerun code. Read the
+Ask the assistant to explain the cause and permitted next action. Invalid
+arguments, a newly selected input or supported imports can be corrected; an
+uncertain execution must not be rerun. Use the existing operation ID with
+`status`, `retry` or `recover` to inspect or save existing work. Read the
 [recovery matrix and browser limitations](limitations.md#if-execution-or-saving-fails)
 before reloading the tab or starting another program.
 
