@@ -74,7 +74,10 @@ restoration, shell errors and rejected links. It proves browser-library behavior
 not native Open WebUI acceptance or available RAM on every device.
 
 It also checks completion before snapshot failure, source-free snapshot/recovery,
-single execution and bounded scratch logs. Database tests distinguish failures
+single execution and bounded scratch logs. A synthetic authenticated Files HTTP
+boundary exercises exact 20 MiB binary restore/upload/readback, fresh-worker restore,
+small callbacks, HTTP failure and changed-byte rejection. This does not qualify
+native host permissions, cookie configuration or target-device peak memory. Database tests distinguish failures
 before dispatch, during execution and after acknowledged completion, and check
 that recovery releases only the applicable request gate.
 Socket-boundary fixtures also check pre-dispatch reconnection against runtime

@@ -15,7 +15,7 @@ from sqlalchemy.exc import (
 
 from .contracts import Action, BrowserFailure, ExecutionBlocked, SaverError
 
-CORRECTABLE_REFUSALS = frozenset({"input_too_large", "input_count_limit"})
+CORRECTABLE_REFUSALS = frozenset({"input_too_large", "input_count_limit", "input_total_too_large"})
 AGENT_GUIDANCE = (
     "Use the execution, persistence and permitted-action facts independently. "
     "Correct an invalid call or program rather than repeating it unchanged. "
@@ -43,6 +43,11 @@ FAILURE_FRAMES = frozenset(
         "read_file",
         "referenced_inputs",
         "store_slot",
+        "stage_native_snapshot",
+        "save_native_snapshot",
+        "reconcile_native_uploads",
+        "adopt_native_upload",
+        "find_native_upload",
         "verify_slot",
         "publish",
         "verify_publication",

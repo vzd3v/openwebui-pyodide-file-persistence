@@ -38,6 +38,8 @@ class WorkspaceReply(StrictModel):
     cause: FailureCause | None = None
     manifest: list[ManifestEntry] = Field(default_factory=list)
     files: list[TransferFile] = Field(default_factory=list)
+    binary: bool = False
+    uploaded_file_id: str | None = None
 
 
 WORKSPACE_BROWSER = r"""
@@ -47,9 +49,11 @@ async def __FUNCTION__():
     cfg = jsn.loads(__CONFIG__)
     import os, stat, base64, hashlib, io, contextlib, traceback, ast, inspect, sys
     from uuid import uuid4
+    import asyncio
     class WorkspaceInvariantError(ValueError):
-        def __init__(self, code):
+        def __init__(self, code, http_status=0):
             self.code = code
+            self.http_status = http_status
             super().__init__(code)
     runtime_id = getattr(bi, "_pyodide_file_saver_runtime_id", None)
     if runtime_id is None:
@@ -77,7 +81,8 @@ async def __FUNCTION__():
     shell_ready = shell_ready and (getattr(bi, "_pyodide_file_saver_shell_digest", None)
         == cfg.get("shell_digest"))
     if cfg["phase"] == "prepare":
-        return response(warm=warm, shell_ready=shell_ready)
+        return response(warm=warm, shell_ready=shell_ready,
+            binary=cfg.get("binary_transport", False))
     if getattr(bi, "_pyodide_file_saver_busy", None) is not None:
         return response(outcome="busy", stderr="Another managed execution is still running")
     bi._pyodide_file_saver_busy = cfg["operation_id"]
@@ -85,7 +90,7 @@ async def __FUNCTION__():
     evidence = {}
     try:
         continuation = cfg.get("continuation", False)
-        snapshot_only = cfg["phase"] in {"snapshot", "recover"}
+        snapshot_only = cfg["phase"] in {"snapshot", "recover", "upload"}
         if snapshot_only:
             if not state or state["head"] != cfg["operation_id"]:
                 return response(outcome="recovery_unavailable")
@@ -142,6 +147,54 @@ async def __FUNCTION__():
                 full = regular(relative)
                 if os.path.isfile(full):
                     os.unlink(full)
+        async def http(url, options, json_reply=False, expected_size=None):
+            from js import fetch, AbortController, Object
+            from pyodide.ffi import to_js
+            controller = AbortController.new()
+            options = to_js(options, dict_converter=Object.fromEntries)
+            options.signal = controller.signal
+            try:
+                async with asyncio.timeout(min(45, cfg["limits"]["callback_timeout_seconds"],
+                        cfg.get("http_timeout_seconds", 45))):
+                    reply = await fetch(url, options)
+                    if not reply.ok:
+                        raise WorkspaceInvariantError("transfer_http", int(reply.status))
+                    # Read the body under the same deadline and reject oversized
+                    # responses before allocating an unbounded ArrayBuffer.
+                    if json_reply:
+                        return await reply.json()
+                    from js import Uint8Array
+                    reader = reply.body.getReader()
+                    buffer = Uint8Array.new(expected_size)
+                    offset = 0
+                    try:
+                        while True:
+                            chunk = await reader.read()
+                            if chunk.done:
+                                break
+                            if offset + int(chunk.value.byteLength) > expected_size:
+                                raise WorkspaceInvariantError("transfer_changed")
+                            buffer.set(chunk.value, offset)
+                            offset += int(chunk.value.byteLength)
+                        if offset != expected_size:
+                            raise WorkspaceInvariantError("transfer_changed")
+                        return buffer
+                    finally:
+                        await reader.cancel()
+            except TimeoutError:
+                raise WorkspaceInvariantError("transfer_timeout") from None
+            finally:
+                controller.abort()
+        for item in cfg.get("native_restore", []):
+            full = regular(item["path"])
+            raw = (await http(item["url"], dict(credentials="same-origin"),
+                expected_size=item["size"])).to_py()
+            if len(raw) != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                raise WorkspaceInvariantError("transfer_changed")
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as stream:
+                stream.write(raw)
+            del raw
         for item in cfg["restore"]:
             full = regular(item["path"])
             os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -286,6 +339,25 @@ async def __FUNCTION__():
             with open(regular(entry["path"]), "rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
                     raise WorkspaceInvariantError("input_changed")
+        if cfg["phase"] == "upload":
+            from js import Blob, FormData
+            from pyodide.ffi import to_js
+            item = cfg["native_transfer"]
+            with open(regular(item["path"]), "rb") as stream:
+                raw = stream.read(cfg["limits"]["max_file_bytes"] + 1)
+            if len(raw) != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                raise WorkspaceInvariantError("transfer_changed")
+            form = FormData.new()
+            blob = Blob.new(to_js([memoryview(raw)]))
+            form.append("file", blob, item["path"].split("/")[-1])
+            form.append("metadata", jsn.dumps(dict(pyodide_file_saver=dict(
+                operation_id=cfg["operation_id"], transfer_key=item["transfer_key"]))))
+            result = await http(cfg["upload_url"], dict(method="POST", body=form,
+                credentials="same-origin"), json_reply=True)
+            file_id = str(result.id)
+            del raw, blob, form
+            return response(binary=True, uploaded_file_id=file_id,
+                outcome="ok" if evidence["exit_code"] == 0 else "execution_error", **evidence)
         paths = set(cfg["legacy_paths"])
         for base in ("scripts", "outputs"):
             for directory, dirs, names in os.walk(regular(base), followlinks=False):
@@ -314,13 +386,13 @@ async def __FUNCTION__():
             with open(full, "rb") as stream:
                 sha = hashlib.file_digest(stream, "sha256").hexdigest()
             manifest.append(dict(path=relative, sha256=sha, size=size))
-            if baseline.get(relative) != sha:
+            if baseline.get(relative) != sha and not cfg.get("binary_transport"):
                 with open(full, "rb") as stream:
                     changed.append(dict(path=relative,
                         data=base64.b64encode(stream.read()).decode("ascii")))
         state["head"] = cfg["operation_id"]
         return response(outcome="ok" if evidence["exit_code"] == 0 else "execution_error",
-            **evidence, manifest=manifest, files=changed)
+            **evidence, manifest=manifest, files=changed, binary=cfg.get("binary_transport", False))
     except Exception as error:
         pending_evidence = (state.get("execution", {}) if state
             and state.get("head") == cfg["operation_id"] else {})
@@ -329,7 +401,8 @@ async def __FUNCTION__():
         kind = next((t.__name__ for t in (FileNotFoundError, PermissionError, ValueError,
             OSError, RuntimeError, TypeError, MemoryError) if isinstance(error, t)), "Exception")
         cause = dict(code=error.code if isinstance(error, WorkspaceInvariantError)
-            else "snapshot_exception", exception_type=kind, frame="", line=0)
+            else "snapshot_exception", exception_type=kind, frame="", line=0,
+            http_status=error.http_status if isinstance(error, WorkspaceInvariantError) else 0)
         tb = error.__traceback__
         while tb:
             if tb.tb_frame.f_code.co_name == "__FUNCTION__":
@@ -385,7 +458,7 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
             else "Browser retained snapshot failed",
             "browser_busy" if value.outcome == "busy" else "browser_recovery_unavailable",
             value.phase
-            if value.phase in {"prepare", "restore", "execute", "snapshot", "recover"}
+            if value.phase in {"prepare", "restore", "execute", "snapshot", "recover", "upload"}
             else "unknown",
         )
     return value

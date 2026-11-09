@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -25,9 +25,47 @@ test("real browser worker shares files, transfers retained deltas and preserves 
 const runtime = await loadPyodide({indexURL:'/pyodide/'});
 self.onmessage=async e=>{try{self.postMessage({result:await runtime.runPythonAsync(e.data)});}catch(e){self.postMessage({error:String(e)});}};
 self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`;
+  const nativeFiles = new Map();
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://localhost");
+      if (url.pathname.startsWith("/api/v1/files/")) {
+        if (!request.headers.cookie?.includes("token=synthetic-cookie")) {
+          response.writeHead(401).end();
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          url.pathname === "/api/v1/files/" &&
+          url.searchParams.get("process") === "false"
+        ) {
+          const chunks = [];
+          for await (const chunk of request) chunks.push(chunk);
+          const form = await new Response(Buffer.concat(chunks), {
+            headers: {
+              "content-type": request.headers["content-type"],
+            },
+          }).formData();
+          const id = randomUUID();
+          nativeFiles.set(id, {
+            data: Buffer.from(await form.get("file").arrayBuffer()),
+            metadata: JSON.parse(form.get("metadata")),
+          });
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify({ id }));
+          return;
+        }
+        const id = url.pathname.split("/")[4];
+        if (request.method === "GET" && nativeFiles.has(id)) {
+          if (url.searchParams.has("delay"))
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          response.setHeader("Content-Type", "application/octet-stream");
+          response.end(nativeFiles.get(id).data);
+          return;
+        }
+        response.writeHead(404).end();
+        return;
+      }
       if (url.pathname === "/") {
         response.end("<html>synthetic browser test</html>");
         return;
@@ -426,6 +464,115 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     assert.equal(beforeExecution.outcome, "snapshot_error");
     assert.equal(beforeExecution.execution_completed, undefined);
     assert.equal(beforeExecution.stdout, undefined);
+    // Production wrapper, binary native HTTP boundary, real Pyodide and cookie auth.
+    assert.deepEqual(await start(), { ready: true, absent: true });
+    await page
+      .context()
+      .addCookies([{ name: "token", value: "synthetic-cookie", url: page.url(), httpOnly: true }]);
+    const inputId = randomUUID();
+    const inputBytes = Buffer.alloc(20 * 1024 * 1024, 173);
+    const sha256 = createHash("sha256").update(inputBytes).digest("hex");
+    nativeFiles.set(inputId, { data: inputBytes });
+    const nativeInput = {
+      path: `inputs/${inputId}/large.bin`,
+      file_id: inputId,
+      sha256,
+      size: inputBytes.length,
+      committed: true,
+    };
+    const binaryConfig = {
+      operation_id: randomUUID(),
+      key: "binary",
+      head: "",
+      phase: "restore",
+      warm: false,
+      code: "",
+      language: "python",
+      cwd: ".",
+      restore: [],
+      binary_transport: true,
+      baseline: [],
+      legacy_paths: [],
+      inputs: [nativeInput],
+      blocked_modules: [],
+      native_restore: [{ ...nativeInput, url: `/api/v1/files/${inputId}/content` }],
+    };
+    const timedRestore = await run({
+      ...binaryConfig,
+      operation_id: randomUUID(),
+      key: "binary-deadline",
+      http_timeout_seconds: 0.01,
+      native_restore: [{ ...nativeInput, url: `/api/v1/files/${inputId}/content?delay=1` }],
+    });
+    assert.equal(timedRestore.outcome, "snapshot_error", JSON.stringify(timedRestore));
+    assert.equal(timedRestore.cause.code, "transfer_timeout");
+    const binaryRestored = await run(binaryConfig);
+    assert.notEqual(binaryRestored.outcome, "snapshot_error", JSON.stringify(binaryRestored));
+    const binaryComplete = await run({
+      ...binaryConfig,
+      phase: "execute",
+      continuation: true,
+      native_restore: [],
+      defer_snapshot: true,
+      code: `from pathlib import Path\np=Path('scripts/count')\np.write_text(str(int(p.read_text())+1) if p.exists() else '1')\nPath('outputs/large.bin').write_bytes(Path('${nativeInput.path}').read_bytes())`,
+    });
+    assert.equal(binaryComplete.outcome, "ok", JSON.stringify(binaryComplete));
+    const binarySnapshot = await run({ ...binaryConfig, phase: "snapshot", native_restore: [] });
+    assert.equal(binarySnapshot.binary, true);
+    assert.equal(binarySnapshot.outcome, "ok", JSON.stringify(binarySnapshot));
+    assert.deepEqual(binarySnapshot.files, []);
+    assert(JSON.stringify(binarySnapshot).length < 20000);
+    const large = binarySnapshot.manifest.find((item) => item.path === "outputs/large.bin");
+    assert.equal(large.sha256, sha256);
+    const transfer = { ...large, transfer_key: randomUUID() };
+    const uploadConfig = {
+      ...binaryConfig,
+      phase: "upload",
+      native_restore: [],
+      native_transfer: transfer,
+      upload_url: "/api/v1/files/?process=false",
+    };
+    const missingRoute = await run({ ...uploadConfig, upload_url: "/api/v1/files/missing" });
+    assert.equal(missingRoute.outcome, "snapshot_error");
+    assert.equal(missingRoute.cause.code, "transfer_http");
+    assert.equal(missingRoute.cause.http_status, 404);
+    const uploaded = await run(uploadConfig);
+    assert.equal(uploaded.outcome, "ok", JSON.stringify(uploaded));
+    assert(JSON.stringify(uploaded).length < 2048);
+    assert.match(uploaded.uploaded_file_id, /^[0-9a-f-]{36}$/);
+    const stored = nativeFiles.get(uploaded.uploaded_file_id);
+    assert.equal(createHash("sha256").update(stored.data).digest("hex"), sha256);
+    assert.deepEqual(stored.metadata.pyodide_file_saver, {
+      operation_id: binaryConfig.operation_id,
+      transfer_key: transfer.transfer_key,
+    });
+    const changedReservation = await run({
+      ...uploadConfig,
+      native_transfer: { ...transfer, sha256: "0".repeat(64) },
+    });
+    assert.equal(changedReservation.cause.code, "transfer_changed");
+    const recoveredBinary = await run({ ...binaryConfig, phase: "recover", native_restore: [] });
+    assert.equal(recoveredBinary.outcome, "ok");
+    const count = recoveredBinary.manifest.find((item) => item.path === "scripts/count");
+    assert.equal(count.sha256, createHash("sha256").update("1").digest("hex"));
+    assert.deepEqual(await start(), { ready: true, absent: true });
+    const binaryCold = {
+      ...binaryConfig,
+      operation_id: randomUUID(),
+      key: "binary-cold",
+      inputs: [],
+      native_restore: [{ ...large, url: `/api/v1/files/${uploaded.uploaded_file_id}/content` }],
+    };
+    assert.notEqual((await run(binaryCold)).outcome, "snapshot_error");
+    const coldResult = await run({
+      ...binaryCold,
+      phase: "execute",
+      continuation: true,
+      native_restore: [],
+      code: "from pathlib import Path\nprint(len(Path('outputs/large.bin').read_bytes()))",
+    });
+    assert.equal(coldResult.outcome, "ok", JSON.stringify(coldResult));
+    assert.equal(coldResult.stdout.trim(), String(inputBytes.length));
   } finally {
     await browser?.close();
     await new Promise((resolve) => server.close(resolve));

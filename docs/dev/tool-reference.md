@@ -17,7 +17,8 @@ uncertain outcome. `status` without an ID lists recent operations without stream
 with an ID it includes retained File metadata, accepted bounded stdout/stderr and actual execution
 outcome when available. Status never issues links and does not recheck old bytes
 or grants. `retry` revalidates saved bytes and access before finishing publication,
-without executing the program or recovering missing transfer bytes.
+without executing the program. It can discover/adopt native uploads whose HTTP
+response or callback was lost; bytes never uploaded still require the original browser.
 
 Status returns the acknowledged `head`, up to 32 `unresolved` execution blockers,
 and up to 32 `recoverable` completed/saved operations independently of the recent

@@ -16,6 +16,7 @@ MODULES = (
     "browser_workspace",
     "workspace_manifest",
     "openwebui_adapter",
+    "workspace_transfer",
     "workspace_execution",
     "workspace_recovery",
     "tool_results",

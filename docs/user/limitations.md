@@ -29,7 +29,7 @@ Ask the assistant to use the existing operation ID and **no code**:
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
 | Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; automatic reconnect could not establish a usable original runtime |
-| All file blobs committed, manifest or publication interrupted | `retry` | Verifies saved bytes and current access, reconstructs a missing manifest and finishes publication without running the program |
+| Native upload response lost, all file blobs uploaded, or manifest/publication interrupted | `retry` | Discovers native uploads by their reserved keys, verifies bytes/access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |
 
@@ -47,7 +47,7 @@ outcome unknown. Results include a `recovery_plan` with the applicable next step
 Known-completed work without an acknowledged checkpoint blocks new programs with
 `execution_recovery_required`, preserving its pending root and completion evidence.
 Use recover before reloading/closing the tab. If retained bytes exceed the limits,
-recovery still needs an administrator-approved limit change within transport bounds,
+recovery still needs an administrator-approved decoded-byte limit change within native storage policy,
 or an explicitly chosen new-chat computation. The Tool has no pending-root edit,
 discard, historical inventory or export API.
 

@@ -74,3 +74,22 @@ def parse_manifest(data: bytes, receipt: Receipt, limits: Limits) -> WorkspaceMa
 
 def slot_entry(slot: FileSlot) -> ManifestEntry:
     return ManifestEntry(path=slot.path, sha256=slot.sha256, size=slot.size)
+
+
+def retained_ready(receipt: Receipt) -> bool:
+    """A partial native upload set must never look like an empty complete snapshot."""
+    return (
+        all(slot.committed for slot in receipt.blobs)
+        and [slot_entry(slot) for slot in receipt.blobs] == receipt.files
+        and (
+            receipt.native_transfers is None
+            or all(
+                any(
+                    slot_entry(slot)
+                    == ManifestEntry(path=item.path, sha256=item.sha256, size=item.size)
+                    for slot in receipt.blobs
+                )
+                for item in receipt.native_transfers
+            )
+        )
+    )

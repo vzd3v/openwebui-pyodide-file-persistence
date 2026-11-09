@@ -6,6 +6,7 @@ from pydantic import JsonValue
 
 from .contracts import OperationDiagnostics, Receipt
 from .tool_results import CORRECTABLE_REFUSALS
+from .workspace_manifest import retained_ready
 
 
 def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[str, JsonValue]:
@@ -18,22 +19,38 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             "instructions": "Use retry with this operation_id and no code to verify saved bytes.",
         }
     if receipt.execution_completed:
-        committed = receipt.checkpoint_version == 2 and all(
-            slot.committed for slot in receipt.blobs
-        )
+        committed = receipt.checkpoint_version == 2 and retained_ready(receipt)
         return {
             "execution": "completed",
             "next_step": "finish_publication" if committed else "save_completed_files",
-            "tool_actions": ["status", "retry" if committed else "recover"],
+            "tool_actions": (
+                ["status", "retry", "recover"]
+                if receipt.native_transfers is not None and not committed
+                else ["status", "retry" if committed else "recover"]
+            ),
             "needs_browser": not committed,
             "instructions": (
                 "Use retry with this operation_id and no code; all reserved bytes were saved."
                 if committed
+                else "Use retry without code to reconcile native uploads first; if files remain "
+                "unsaved, use recover in the original live browser. Never rerun the program."
+                if receipt.native_transfers is not None
                 else "Use recover with this operation_id and no code in the original live "
                 "browser. The program finished; do not execute it again to save its files."
             ),
         }
     if diagnostic.dispatch == "not_dispatched" and diagnostic.failure_code:
+        if diagnostic.failure_code == "browser_restore_failed":
+            return {
+                "execution": "not_started",
+                "next_step": "restore_required_files",
+                "tool_actions": ["status"],
+                "needs_browser": True,
+                "needs_new_request": True,
+                "instructions": "The program did not start. Check availability, access and exact "
+                "bytes of the required saved/input Files before a new request. Preserve the "
+                "acknowledged head; reconnecting alone cannot repair deleted or changed files.",
+            }
         if diagnostic.failure_code in CORRECTABLE_REFUSALS:
             return {
                 "execution": "not_started",

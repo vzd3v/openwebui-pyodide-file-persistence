@@ -19,6 +19,7 @@ from .contracts import (
     FileBytes,
     FileSlot,
     Limits,
+    NativeTransfer,
     Receipt,
     SaverError,
     decode_files,
@@ -27,6 +28,7 @@ from .contracts import (
     issued_paths,
     json_text,
     safe_relative_path,
+    transfer_deadline,
 )
 from .openwebui_adapter import NativeBrowserConnection, OpenWebUIAdapter
 from .workspace_manifest import (
@@ -36,6 +38,7 @@ from .workspace_manifest import (
     slot_entry,
     validate_manifest,
 )
+from .workspace_transfer import save_native_snapshot, stage_native_snapshot
 
 COMPLETION_FIELDS = (
     "execution_completed",
@@ -131,6 +134,9 @@ async def execute_workspace(
         "phase": "prepare",
         "shell_digest": digest(shell_asset().encode()),
         "restore": [],
+        "native_restore": [],
+        # Already staged legacy uploads must keep their reserved native File IDs.
+        "binary_transport": not (recovering and receipt.native_transfers is None and receipt.blobs),
         "limits": limits.model_dump(),
     }
     if not recovering:
@@ -139,6 +145,13 @@ async def execute_workspace(
         prepared = workspace_reply(raw, receipt.operation_id, nonce, limits)
         if prepared.phase != "prepare":
             raise SaverError("Invalid browser prepare phase")
+        if prepared.outcome != "ok":
+            raise BrowserFailure(
+                "Browser preparation failed",
+                "browser_prepare_failed",
+                "prepare",
+                cause=prepared.cause,
+            )
         await connection.observe(prepared.runtime_id)
         config["runtime_id"] = prepared.runtime_id
     else:
@@ -202,6 +215,17 @@ async def execute_workspace(
     assert isinstance(additions, dict)
     config.update(additions)
 
+    def ensure_restore_ack(restored: WorkspaceReply) -> None:
+        if restored.phase != "restore":
+            raise SaverError("Invalid restore acknowledgement")
+        if restored.outcome != "ok":
+            raise BrowserFailure(
+                "Browser file restoration failed; source was not dispatched",
+                "browser_restore_failed",
+                "restore",
+                cause=restored.cause,
+            )
+
     async def send_restore(file: FileBytes) -> None:
         await connection.ensure_route()
         await adapter.state.mark(context, receipt.operation_id, phase="restore")
@@ -213,25 +237,50 @@ async def execute_workspace(
             event_call, config, limits, session_id, connection
         )
         restored = workspace_reply(response, receipt.operation_id, restore_nonce, limits)
-        if restored.phase != "restore":
-            raise SaverError("Invalid restore acknowledgement")
+        ensure_restore_ack(restored)
         config["continuation"] = True
         config["shell_asset"] = ""  # Shell code is needed only in the final execution.
 
+    async def send_native_restore(slot: FileSlot) -> None:
+        await connection.ensure_route()
+        await adapter.authorize_file(context, slot.file_id)
+        await adapter.state.mark(context, receipt.operation_id, phase="restore")
+        config["phase"], config["restore"] = "restore", []
+        until = restore_deadline.when()
+        assert until is not None
+        config["http_timeout_seconds"] = max(0.001, until - asyncio.get_running_loop().time())
+        config["native_restore"] = [
+            {**slot.model_dump(), "url": adapter.native_content_url(slot.file_id)}
+        ]
+        response, restore_nonce = await browser_call(
+            event_call, config, limits, session_id, connection
+        )
+        restored = workspace_reply(response, receipt.operation_id, restore_nonce, limits)
+        ensure_restore_ack(restored)
+        config["native_restore"] = []
+        config["continuation"], config["shell_asset"] = True, ""
+
     asset = config["shell_asset"]
     config["shell_asset"] = ""
-    if not recovering and not prepared.warm:
-        for slot in inherited:
-            data = await adapter.verify_slot(context, slot, limits.max_file_bytes)
-            await send_restore(FileBytes(slot.path, data))
-        for file in restore:
-            await send_restore(file)
-    for slot in inputs if not recovering else []:
-        if not prepared.warm or slot.path in fresh_inputs:
-            data = await adapter.read_file(context, slot.file_id, limits.max_file_bytes)
-            if len(data) != slot.size or digest(data) != slot.sha256:
-                raise SaverError("Native input no longer matches its saved reference")
-            await send_restore(FileBytes(slot.path, data))
+    async with transfer_deadline(limits.transfer_timeout_seconds, "restore") as restore_deadline:
+        if not recovering and not prepared.warm:
+            for slot in inherited:
+                if prepared.binary and slot.representation != "empty":
+                    await send_native_restore(slot)
+                else:
+                    data = await adapter.verify_slot(context, slot, limits.max_file_bytes)
+                    await send_restore(FileBytes(slot.path, data))
+            for file in restore:
+                await send_restore(file)
+        for slot in inputs if not recovering else []:
+            if not prepared.warm or slot.path in fresh_inputs:
+                if prepared.binary and slot.representation != "empty":
+                    await send_native_restore(slot)
+                else:
+                    data = await adapter.read_file(context, slot.file_id, limits.max_file_bytes)
+                    if len(data) != slot.size or digest(data) != slot.sha256:
+                        raise SaverError("Native input no longer matches its saved reference")
+                    await send_restore(FileBytes(slot.path, data))
     config["phase"], config["restore"], config["shell_asset"] = (
         "recover" if recovering else "execute",
         [],
@@ -271,6 +320,8 @@ async def execute_workspace(
             ):
                 raise SaverError("Completion evidence changed after acknowledgement")
             saved.execution_completed, saved.python_ok = True, reply.exit_code == 0
+            if not recovering:
+                saved.browser_warm = prepared.warm
             saved.stdout, saved.stderr, saved.exit_code = (
                 reply.stdout,
                 reply.stderr,
@@ -307,6 +358,46 @@ async def execute_workspace(
         if any(getattr(snapshot, key) != getattr(reply, key) for key in COMPLETION_FIELDS):
             raise SaverError("Snapshot completion evidence changed after acknowledgement")
         reply = snapshot
+    if reply.binary:
+        if reply.files:
+            raise SaverError("Binary snapshot must not contain inline file bytes")
+        saved = await stage_native_snapshot(
+            adapter,
+            context,
+            receipt.operation_id,
+            reply.manifest,
+            inherited,
+            inputs,
+            legacy,
+            limits,
+        )
+        await adapter.state.mark(
+            context, receipt.operation_id, phase="storage", dispatch="completed_reported"
+        )
+
+        async def upload(transfer: NativeTransfer, remaining: float) -> WorkspaceReply:
+            config.update(
+                phase="upload",
+                code="",
+                shell_asset="",
+                native_transfer=transfer.model_dump(),
+                upload_url=adapter.native_upload_url(),
+                http_timeout_seconds=remaining,
+            )
+            raw, upload_nonce = await browser_call(
+                event_call, config, limits, session_id, connection
+            )
+            result = workspace_reply(raw, receipt.operation_id, upload_nonce, limits)
+            if result.phase != "upload" or result.outcome == "snapshot_error":
+                raise BrowserFailure(
+                    "Browser binary upload failed",
+                    "browser_transfer_failed",
+                    "upload",
+                    cause=result.cause,
+                )
+            return result
+
+        return await save_native_snapshot(adapter, context, saved, limits, upload)
     changed = decode_files(reply.files, limits)
     changes = {item.path: item for item in changed}
     inherited_by_path = {slot.path: slot for slot in inherited}

@@ -43,6 +43,7 @@ from .contracts import (
     Receipt,
     SaverError,
 )
+from .workspace_manifest import retained_ready
 
 
 class WorkspaceState:
@@ -361,7 +362,7 @@ class WorkspaceState:
                     base_revision=receipt.base_revision,
                     version=0,
                     checkpoint_file_id=receipt.checkpoint.file_id,
-                    receipt_json=receipt.model_dump_json(),
+                    receipt_json=receipt.model_dump_json(exclude_none=True),
                     created_at=now,
                     updated_at=now,
                 )
@@ -673,7 +674,7 @@ class WorkspaceState:
             update(self.operation)
             .where(self.operation.c.operation_id == receipt.operation_id)
             .values(
-                receipt_json=receipt.model_dump_json(),
+                receipt_json=receipt.model_dump_json(exclude_none=True),
                 version=self.operation.c.version + 1,
                 updated_at=int(time.time()),
             )
@@ -693,8 +694,7 @@ class WorkspaceState:
             if receipt.state != "saved":
                 return receipt
             if not receipt.checkpoint.committed or (
-                receipt.checkpoint_version == 2
-                and not all(blob.committed for blob in receipt.blobs)
+                receipt.checkpoint_version == 2 and not retained_ready(receipt)
             ):
                 raise SaverError("Checkpoint is not committed")
             changed = await session.execute(

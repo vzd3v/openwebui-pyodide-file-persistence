@@ -8,6 +8,8 @@ import binascii
 import hashlib
 import json
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
@@ -44,6 +46,9 @@ class FailureCause(BaseModel):
         "retained_file_limit",
         "retained_total_limit",
         "retained_count_limit",
+        "transfer_http",
+        "transfer_timeout",
+        "transfer_changed",
     ] = "snapshot_exception"
     exception_type: Literal[
         "ValueError",
@@ -57,6 +62,7 @@ class FailureCause(BaseModel):
     ] = "Exception"
     frame: Literal["managed_workspace", ""] = ""
     line: int = Field(default=0, ge=0, le=10000)
+    http_status: int = Field(default=0, ge=0, le=599)
 
 
 class SaverError(Exception):
@@ -135,19 +141,31 @@ class Limits(StrictModel):
         ),
     )
     max_file_bytes: int = Field(
-        default=8 * 1024 * 1024,
+        default=20 * 1024 * 1024,
         ge=1,
-        lt=HOST_SOCKET_LIMIT,
+        le=1024 * 1024 * 1024,
         description="Maximum decoded bytes per managed file; host upload policy may lower it.",
     )
     max_total_bytes: int = Field(
-        default=8 * 1024 * 1024,
+        default=64 * 1024 * 1024,
         ge=1,
-        lt=HOST_SOCKET_LIMIT,
+        le=1024 * 1024 * 1024,
         description=(
             "Maximum decoded bytes across retained files, "
             "excluding transient work/ and referenced native inputs."
         ),
+    )
+    max_input_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1,
+        le=1024 * 1024 * 1024,
+        description="Maximum decoded bytes across inherited and newly selected native inputs.",
+    )
+    transfer_timeout_seconds: int = Field(
+        default=120,
+        ge=1,
+        le=600,
+        description="Total seconds for sequential binary transfers; HTTP calls are bounded too.",
     )
     max_envelope_bytes: int = Field(
         default=15 * 1024 * 1024,
@@ -177,6 +195,24 @@ class Limits(StrictModel):
             "60-second frontend deadline. Timeout does not prove worker termination."
         ),
     )
+
+
+@asynccontextmanager
+async def transfer_deadline(seconds: int, phase: str) -> AsyncIterator[asyncio.Timeout]:
+    """Normalize only this stage's expired deadline; preserve external cancellation."""
+    deadline = asyncio.timeout(seconds)
+    try:
+        async with deadline:
+            yield deadline
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        raise BrowserFailure(
+            "File transfer stage timed out; inspect this operation before recovery",
+            "transfer_timeout",
+            phase,
+            cause=FailureCause(code="transfer_timeout", exception_type="Exception"),
+        ) from None
 
 
 class Action(StrictModel):
@@ -228,6 +264,15 @@ class FileSlot(StrictModel):
         return self
 
 
+class NativeTransfer(StrictModel):
+    """Backend-issued immutable correlation, never a native File identifier."""
+
+    path: str
+    transfer_key: str
+    sha256: str
+    size: int = Field(gt=0)
+
+
 class Receipt(StrictModel):
     schema_version: Literal[1] = 1
     operation_id: str
@@ -248,6 +293,7 @@ class Receipt(StrictModel):
     stderr: str = ""
     checkpoint_version: Literal[1, 2] = 1
     blobs: list[FileSlot] = Field(default_factory=list)
+    native_transfers: list[NativeTransfer] | None = None
     inputs: list[FileSlot] = Field(default_factory=list)
     legacy_paths: list[str] = Field(default_factory=list)
     language: Literal["python", "bash"] = "python"

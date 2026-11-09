@@ -37,8 +37,9 @@ from .tool_results import (
     validate_invocation,
 )
 from .workspace_execution import execute_workspace, verify_manifest
-from .workspace_manifest import manifest_bytes, parse_manifest
+from .workspace_manifest import manifest_bytes, parse_manifest, retained_ready
 from .workspace_recovery import recovery_plan
+from .workspace_transfer import reconcile_native_uploads
 
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
 EventEmitter = Callable[[dict[str, JsonValue]], Awaitable[object]]
@@ -142,10 +143,12 @@ async def resume_publication(
 ) -> Receipt:
     receipt = await adapter.state.get(context, operation_id)
     if receipt.state == "allocated":
+        if receipt.native_transfers is not None:
+            receipt = await reconcile_native_uploads(adapter, context, receipt, limits)
         if not (
             receipt.execution_completed
             and receipt.checkpoint_version == 2
-            and all(blob.committed for blob in receipt.blobs)
+            and retained_ready(receipt)
         ):
             raise SaverError(
                 "No complete committed blob set is available; recover requires the original "
@@ -270,6 +273,8 @@ class Tools:
             "max_files",
             "max_file_bytes",
             "max_total_bytes",
+            "max_input_bytes",
+            "transfer_timeout_seconds",
             "max_envelope_bytes",
             "max_text_bytes",
             "callback_timeout_seconds",

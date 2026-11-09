@@ -16,7 +16,12 @@ host/provider before enabling the Tool for users.
 | Authorization | Async user lookup, live chat-write checks, native file-access checks and genuine injected actor/chat/assistant/request context |
 | Storage | Compatible synchronous provider upload/read methods and normal authenticated download routes |
 | Execution | Native function calling, Pyodide engine, host blocked-module policy and a connected browser |
-| Transport | Serialized payloads below 16 MiB and callback waits below 60 seconds; provider upload limits may be lower |
+| Transport | Serialized metadata below 16 MiB and callback waits below 60 seconds; provider limits may be lower |
+| Binary Files | Same-origin worker fetch with native cookie auth, canonical content GET and multipart upload with `process=false`; native metadata retained for upload reconciliation |
+
+Binary routes use the canonical same-origin `/api/v1/files/` API, matching the
+inspected Open WebUI 0.12.3 root-mounted frontend. Arbitrary subpath hosting is not
+claimed. The existing worker must be able to send native authentication cookies.
 
 Publication updates an existing assistant message's `files`/`updated_at`, Chat JSON,
 ChatFile links and the operation receipt in one transaction. It preserves message

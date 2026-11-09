@@ -62,8 +62,13 @@ promise browser-console secrecy.
 
 ## Resource and compatibility limits
 
-Retained transfers stay below stock 16 MiB callbacks and the 60-second frontend
-timeout. A backend timeout does not prove that the browser worker stopped.
+Callbacks carry metadata below the stock 16 MiB ceiling and remain below the
+60-second frontend timeout. Nonempty file bytes use native same-origin cookie-authenticated
+HTTP in the existing worker; no Bearer token is exported into wrapper source.
+Native HTTP metadata and hashes are untrusted: adoption verifies owner, frozen
+reservation and actual provider bytes before electing one File ID. Per-file,
+retained/input aggregate and HTTP/stage deadlines bound transfers; HTTP avoids
+base64 expansion but is not a zero-copy or device-memory guarantee. A backend timeout does not prove that the browser worker stopped.
 Durable gates limit repeat dispatch across workers and reconnects; they do not
 guarantee exactly-once arbitrary code or bound a model's token use. Known failure
 envelopes are normalized fail-closed protocol signals, not trusted browser claims.
