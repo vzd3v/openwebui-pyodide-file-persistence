@@ -197,6 +197,27 @@ before dispatch, bounded optional status delivery, and preserving saved results
 when presentation fails. These fixtures do not establish native fault delivery on
 every host. Earlier qualification remains scoped to its recorded artifact.
 
+## 0.3.0a3 native backward compatibility
+
+Candidate Tool SHA-256:
+`6916a3921d031010a8e15e80020fb342388f30c37e0b52e0570e1f8d3c54feea`.
+Focused native checks used Chromium, PostgreSQL, local storage and Open WebUI
+0.12.3 with local customizations. Open WebUI 0.13.3 native acceptance remains pending.
+
+- Russian and English program failures produced readable failed cards after
+  reload; the agent corrected the source and returned the requested language.
+- Exact 20 MiB downloads and fresh-worker restoration preserved bytes and an
+  execution counter of one. DOCX, XLSX, PNG, CSV and JSON results passed semantic checks.
+- Native Stop, socket reconnection and lost upload acknowledgement retained
+  execution fences. Manual source-free recovery preserved completed results;
+  upload reconciliation reused the original File ID.
+- Repeated failed recovery produced a saved native error without executing the
+  source again. Separate host-limit checks preserved available partial results;
+  those response budgets belong to that host, not this Tool.
+
+Writer/socket failure delivery was checked with real-database fixtures and
+synthetic host boundaries; this does not qualify visibility during a native host outage.
+
 ## Version-sensitive integration
 
 Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3 and 0.13.3
