@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import JsonValue
 
 from .contracts import OperationDiagnostics, Receipt
+from .tool_results import CORRECTABLE_REFUSALS
 
 
 def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[str, JsonValue]:
@@ -33,6 +34,17 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             ),
         }
     if diagnostic.dispatch == "not_dispatched" and diagnostic.failure_code:
+        if diagnostic.failure_code in CORRECTABLE_REFUSALS:
+            return {
+                "execution": "not_started",
+                "next_step": "correct_inputs",
+                "tool_actions": ["status", "execute"],
+                "needs_browser": True,
+                "instructions": (
+                    "The program did not start. Correct the selected inputs or reduce their size, "
+                    "then submit a corrected execute. Do not repeat the unchanged rejected call."
+                ),
+            }
         return {
             "execution": "not_started",
             "next_step": "reconnect_before_new_execution",

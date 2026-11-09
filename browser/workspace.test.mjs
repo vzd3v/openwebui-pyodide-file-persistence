@@ -265,6 +265,11 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       "from pathlib import Path\nimport shutil\np=Path('scripts/.runs/latest');shutil.rmtree(p);p.symlink_to('../..')",
     );
     assert.equal(recipeLink.outcome, "snapshot_error");
+    assert.equal(recipeLink.cause.code, "retained_link");
+    assert.equal(recipeLink.cause.exception_type, "ValueError");
+    assert.equal(recipeLink.cause.frame, "managed_workspace");
+    assert.equal(typeof recipeLink.cause.line, "number");
+    assert.equal(Object.hasOwn(recipeLink.cause, "message"), false);
     const link = await execute(
       "from pathlib import Path\nPath('../scripts/escape').symlink_to('/etc/passwd')",
     );
@@ -273,6 +278,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       "from pathlib import Path\np=Path('outputs');p.unlink();p.symlink_to('/tmp')",
     );
     assert.equal(alias.outcome, "snapshot_error");
+    assert.equal(alias.cause.code, "managed_alias");
     assert.deepEqual(await start(), { ready: true, absent: true });
     const legacyOperation = randomUUID();
     const legacyConfig = {
@@ -339,6 +345,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       code: "raise Exception('never run')",
     });
     assert.equal(oversized.outcome, "snapshot_error");
+    assert.equal(oversized.cause.code, "retained_file_limit");
     assert.equal(oversized.execution_completed, true);
     assert.equal(oversized.exit_code, 0);
     assert.equal(oversized.stdout.trim(), "completed before snapshot");

@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
+from uuid import uuid4
 
 from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from .browser_execution import read_checkpoint
 from .contracts import (
-    Action,
+    TOOL_RELEASE,
+    ActionName,
     BoundContext,
     BrowserFailure,
     ExecutionBlocked,
+    LanguageName,
     Limits,
     Receipt,
     SaverError,
@@ -26,6 +30,12 @@ from .contracts import (
     safe_filename,
 )
 from .openwebui_adapter import OpenWebUIAdapter, require_string
+from .tool_results import (
+    CORRECTABLE_REFUSALS,
+    exception_diagnostic,
+    tool_result,
+    validate_invocation,
+)
 from .workspace_execution import execute_workspace, verify_manifest
 from .workspace_manifest import manifest_bytes, parse_manifest
 from .workspace_recovery import recovery_plan
@@ -40,6 +50,12 @@ def receipt_summary(receipt: Receipt) -> dict[str, JsonValue]:
         "operation_id": receipt.operation_id,
         "state": receipt.state,
         "workspace_saved": receipt.checkpoint.committed,
+        "persistence_outcome": "committed"
+        if receipt.checkpoint.committed
+        else "pending"
+        if receipt.execution_completed
+        else "unchanged",
+        "publication_outcome": "published" if receipt.state == "published" else "not_published",
         "execution_completed": receipt.execution_completed,
         "python_ok": receipt.python_ok,
         "language": receipt.language,
@@ -96,6 +112,14 @@ async def operation_summary(
         "dispatch": diagnostic.dispatch,
         "failure_code": diagnostic.failure_code or None,
         "request_scope": diagnostic.request_scope,
+        "first_failure_code": diagnostic.first_failure_code or None,
+        "first_failure_phase": diagnostic.first_failure_phase or None,
+        "first_failure_at": diagnostic.first_failure_at,
+        "last_failure_at": diagnostic.last_failure_at,
+        "cause": diagnostic.cause.model_dump() if diagnostic.cause else None,
+        "first_failure_cause": diagnostic.first_failure_cause.model_dump()
+        if diagnostic.first_failure_cause
+        else None,
         **(
             {"execution_outcome": "not_started"}
             if not receipt.execution_completed
@@ -215,7 +239,19 @@ def final_result(receipt: Receipt) -> dict[str, JsonValue]:
         result["recovery"] = (
             "Retry this saved operation_id without code; do not execute code again."
         )
-    return result
+    if receipt.state == "conflict":
+        result["permitted_actions"] = ["status"]
+        return tool_result(result, error_code="workspace_conflict", message=str(result["recovery"]))
+    if not receipt.python_ok:
+        result["permitted_actions"] = ["execute", "status"]
+        return tool_result(result, error_code="program_error", message=str(result["recovery"]))
+    if receipt.state != "published":
+        result["permitted_actions"] = ["status", "retry"]
+        return tool_result(
+            result, error_code="publication_pending", message=str(result["recovery"])
+        )
+    result["permitted_actions"] = ["execute", "status", "retry"]
+    return tool_result(result, message="Execution completed and files were saved")
 
 
 class Tools:
@@ -253,9 +289,9 @@ class Tools:
     async def execute_code(
         self,
         code: str = "",
-        action: str = "execute",
+        action: ActionName = "execute",
         operation_id: str = "",
-        language: str = "python",
+        language: LanguageName = "python",
         __user__: dict[str, JsonValue] | None = None,
         __chat_id__: str | None = None,
         __message_id__: str | None = None,
@@ -267,6 +303,9 @@ class Tools:
     ) -> str:
         """Run Python or Bash in the user's browser with durable retained files.
 
+        Each Python call has fresh globals: import names again or run a saved script.
+        Explain failures and permitted next steps in the user's request language.
+        Correct invalid calls/programs; never repeat an unchanged rejected call.
         Every call starts at the workspace root, shared by Python and Bash. Use
         work/ for transient scratch. Write files
         issued to the user under outputs/; scripts/ holds private retained source and recipes.
@@ -310,22 +349,86 @@ class Tools:
         adapter: OpenWebUIAdapter | None = None
         context: BoundContext | None = None
         stop_ready = False
-        try:
-            call = Action.model_validate(
-                {
-                    "code": code,
-                    "action": action,
-                    "operation_id": operation_id,
-                    "language": language,
-                    "cwd": ".",
+        invocation_id = str(uuid4())
+        started_at = time.monotonic()
+        stage = "validation"
+        correlation: dict[str, JsonValue] = {
+            "invocation_id": invocation_id,
+            "release": TOOL_RELEASE,
+        }
+        for key, value in (
+            ("chat_id", __chat_id__),
+            ("message_id", __message_id__),
+            ("task_id", OpenWebUIAdapter.task_id(__metadata__ or {})),
+        ):
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+                correlation[key] = value
+        if action in ("execute", "status", "retry", "recover"):
+            correlation["action"] = action
+
+        def finish(value: dict[str, JsonValue]) -> str:
+            value["invocation_id"] = invocation_id
+            event: dict[str, JsonValue] = {
+                **correlation,
+                "component": "execution",
+                "event": "invocation_finished",
+                "duration_ms": round((time.monotonic() - started_at) * 1000),
+                **({"operation": current_operation} if current_operation else {}),
+            }
+            for field in (
+                "status",
+                "error_code",
+                "phase",
+                "execution_outcome",
+                "persistence_outcome",
+                "publication_outcome",
+                "cause",
+                "error_details",
+                "error_type",
+                "failure_frame",
+                "failure_line",
+            ):
+                if field in value:
+                    event[field] = value[field]
+            # Validation details contain a correction example; only fixed structural
+            # fields and numeric limits enter operational logs.
+            details = value.get("error_details")
+            if isinstance(details, dict):
+                event["error_details"] = {
+                    key: details[key]
+                    for key in (
+                        "field",
+                        "type",
+                        "file_id",
+                        "limit_bytes",
+                        "size_bytes",
+                        "size_lower_bound_bytes",
+                        "limit_count",
+                        "count",
+                    )
+                    if key in details
                 }
+            (SAVER_LOG.warning if value.get("status") == "error" else SAVER_LOG.info)(
+                json_text(event)
             )
+            return json_text(value)
+
+        SAVER_LOG.info(
+            json_text({**correlation, "component": "execution", "event": "invocation_started"})
+        )
+        try:
+            call = validate_invocation(code, action, operation_id, language)
+            stage = "configuration"
             # Cached Tool instances carry configuration, never actor/workspace state.
             limits = Limits.model_validate(
                 self.valves.model_dump(exclude={"stop_on_browser_failure"})
             )
             if __request__ is None or not __user__:
-                raise SaverError("Authenticated Open WebUI invocation context is required")
+                raise SaverError(
+                    "Authenticated Open WebUI invocation context is required",
+                    "invocation_context_unavailable",
+                )
+            stage = "admission"
             adapter = OpenWebUIAdapter()
             context = await adapter.bind(
                 require_string(__user__.get("id")),
@@ -353,44 +456,53 @@ class Tools:
                 head = await adapter.state.head(context)
                 unresolved = await adapter.state.unresolved(context)
                 recoverable = await adapter.state.recoverable(context)
-                return json_text(
-                    {
-                        "operations": [
-                            await operation_summary(
-                                adapter, context, item, streams=bool(call.operation_id)
-                            )
-                            for item in receipts
-                        ],
-                        "head": await operation_summary(adapter, context, head) if head else None,
-                        "unresolved": [
-                            await operation_summary(adapter, context, item)
-                            for item in unresolved[:32]
-                        ],
-                        "unresolved_truncated": len(unresolved) > 32,
-                        "recoverable": [
-                            await operation_summary(adapter, context, item)
-                            for item in recoverable[:32]
-                        ],
-                        "recoverable_truncated": len(recoverable) > 32,
-                        "availability": "not_rechecked",
-                        "instructions": (
-                            "Receipts record past acknowledgements, not current availability. "
-                            "Bytes, destinations or grants may since have been deleted or revoked. "
-                            "Use retry with the saved operation_id and no code to revalidate "
-                            "without rerunning code before returning download links."
-                        ),
-                    }
+                return finish(
+                    tool_result(
+                        {
+                            "operations": [
+                                await operation_summary(
+                                    adapter, context, item, streams=bool(call.operation_id)
+                                )
+                                for item in receipts
+                            ],
+                            "head": await operation_summary(adapter, context, head)
+                            if head
+                            else None,
+                            "unresolved": [
+                                await operation_summary(adapter, context, item)
+                                for item in unresolved[:32]
+                            ],
+                            "unresolved_truncated": len(unresolved) > 32,
+                            "recoverable": [
+                                await operation_summary(adapter, context, item)
+                                for item in recoverable[:32]
+                            ],
+                            "recoverable_truncated": len(recoverable) > 32,
+                            "availability": "not_rechecked",
+                            "instructions": (
+                                "Receipts record past acknowledgements, not current availability. "
+                                "Bytes, destinations or grants may have been deleted or revoked. "
+                                "Use retry with the saved operation_id and no code to revalidate "
+                                "without rerunning code before returning download links."
+                            ),
+                        },
+                        message="Operation status read; file availability was not rechecked",
+                    )
                 )
             if call.action == "retry":
-                current_operation = call.operation_id
+                existing = await adapter.state.get(context, call.operation_id)
+                current_operation = existing.operation_id
                 receipt = await resume_publication(adapter, context, call.operation_id, limits)
             else:
                 if __event_call__ is None:
-                    raise SaverError("A connected browser session is required for execution")
+                    raise SaverError(
+                        "A connected browser session is required for execution",
+                        "session_unavailable",
+                    )
                 blocked_modules = await adapter.execution_policy()
                 if call.action == "recover":
-                    current_operation = call.operation_id
                     receipt = await adapter.state.get(context, call.operation_id)
+                    current_operation = receipt.operation_id
                     if receipt.state != "allocated":
                         raise SaverError("Use retry to verify reserved or committed saved bytes")
                     call = call.model_copy(update={"language": receipt.language})
@@ -448,22 +560,25 @@ class Tools:
                         json_text(
                             {
                                 "component": "presentation",
+                                **correlation,
                                 "operation": current_operation,
                                 "error_type": type(error).__name__,
                             }
                         )
                     )
-            SAVER_LOG.info(
+            return finish(result)
+        except WorkspaceInvocationStopped:
+            SAVER_LOG.warning(
                 json_text(
                     {
+                        **correlation,
                         "component": "execution",
-                        "operation": current_operation,
-                        "state": receipt.state,
+                        "event": "invocation_cancelled",
+                        **({"operation": current_operation} if current_operation else {}),
+                        "duration_ms": round((time.monotonic() - started_at) * 1000),
                     }
                 )
             )
-            return json_text(result)
-        except WorkspaceInvocationStopped:
             raise
         except asyncio.CancelledError:
             # The caller's cancellation is distinct from a callback timeout. Do
@@ -481,7 +596,26 @@ class Tools:
                             else None,
                         )
                 except Exception:
-                    SAVER_LOG.warning("Cancellation diagnostic persistence failed")
+                    SAVER_LOG.warning(
+                        json_text(
+                            {
+                                **correlation,
+                                "component": "execution",
+                                "event": "cancellation_diagnostic_failed",
+                            }
+                        )
+                    )
+            SAVER_LOG.warning(
+                json_text(
+                    {
+                        **correlation,
+                        "component": "execution",
+                        "event": "invocation_cancelled",
+                        **({"operation": current_operation} if current_operation else {}),
+                        "duration_ms": round((time.monotonic() - started_at) * 1000),
+                    }
+                )
+            )
             raise
         except Exception as error:
             first_refusal = False
@@ -496,24 +630,50 @@ class Tools:
                             current_operation,
                         )
                     except Exception:
-                        SAVER_LOG.warning("Request refusal persistence failed")
+                        SAVER_LOG.warning(
+                            json_text(
+                                {
+                                    **correlation,
+                                    "component": "execution",
+                                    "event": "request_refusal_persistence_failed",
+                                    "operation": current_operation,
+                                }
+                            )
+                        )
             if isinstance(error, SaverError):
                 detail = str(error)
+                error_code = error.error_code or "host_operation_failed"
             elif isinstance(error, ValidationError):
                 detail = "Invalid invocation, configuration or saved data"
+                error_code = (
+                    "invalid_configuration" if stage == "configuration" else "invalid_saved_data"
+                )
             else:
                 detail = "Host/storage operation failed; inspect the saved receipt before retrying"
+                error_code = "host_operation_failed"
             result: dict[str, JsonValue] = {
                 "incomplete": True,
-                "error": detail,
-                "operation_id": current_operation,
+                **({"operation_id": current_operation} if current_operation else {}),
+                "execution_outcome": "not_started" if not current_operation else "unknown",
+                "persistence_outcome": "unchanged" if not current_operation else "pending",
+                "publication_outcome": "not_published",
+                "phase": stage,
+                **exception_diagnostic(error),
                 "recovery": (
                     "Use status to inspect this operation; retry only a committed saved "
                     "operation, without code."
                 ),
             }
-            if isinstance(error, SaverError) and error.error_code:
-                result["error_code"] = error.error_code
+            if isinstance(error, SaverError) and error.details:
+                result["error_details"] = error.details
+            if stage == "validation":
+                result["recovery"] = "Correct the indicated arguments; status accepts no code."
+                result["permitted_actions"] = ["execute", "status", "retry", "recover"]
+            if error_code in CORRECTABLE_REFUSALS:
+                result["recovery"] = (
+                    "Correct the selected inputs or reduce their size; "
+                    "do not repeat the unchanged call."
+                )
             if isinstance(error, ExecutionBlocked):
                 result["first_refusal"] = first_refusal
                 result["recovery"] = (
@@ -523,6 +683,8 @@ class Tools:
                 )
             if isinstance(error, BrowserFailure):
                 result["phase"] = error.phase
+                if error.cause:
+                    result["cause"] = error.cause.model_dump()
             if adapter and context and current_operation:
                 try:
                     if not isinstance(error, ExecutionBlocked):
@@ -544,32 +706,28 @@ class Tools:
                             else "host_operation_failed",
                             session_failed=isinstance(error, BrowserFailure)
                             and error.error_code in {"session_unavailable", "session_disconnected"},
+                            request_failed=error_code not in CORRECTABLE_REFUSALS,
+                            cause=error.cause if isinstance(error, BrowserFailure) else None,
                         )
                     receipt = await adapter.state.get(context, current_operation)
-                    result["receipt"] = await operation_summary(adapter, context, receipt)
+                    summary = await operation_summary(adapter, context, receipt)
+                    result["receipt"] = summary
+                    for field in (
+                        "execution_outcome",
+                        "persistence_outcome",
+                        "publication_outcome",
+                        "phase",
+                    ):
+                        result[field] = summary[field]
                     result.update(receipt_diagnostics(receipt))
                     diagnostic = await adapter.state.diagnostics(context, current_operation)
                     plan = recovery_plan(receipt, diagnostic)
                     result["recovery_plan"] = plan
                     result["recovery"] = plan["instructions"]
+                    result["permitted_actions"] = plan["tool_actions"]
                 except Exception:
                     result["receipt_unavailable"] = True
-            # No exception repr/traceback: DB/provider errors can contain payloads or secrets.
-            SAVER_LOG.warning(
-                json_text(
-                    {
-                        "component": "execution",
-                        "operation": current_operation,
-                        "error_type": type(error).__name__,
-                        **(
-                            {"error_code": error.error_code}
-                            if isinstance(error, SaverError) and error.error_code
-                            else {}
-                        ),
-                        **({"phase": error.phase} if isinstance(error, BrowserFailure) else {}),
-                    }
-                )
-            )
+            result = tool_result(result, error_code=error_code, message=detail)
             if (
                 stop_ready
                 and adapter
@@ -609,6 +767,16 @@ class Tools:
                                 }
                             )
                 except Exception:
-                    SAVER_LOG.warning("Native cancellation presentation failed")
+                    SAVER_LOG.warning(
+                        json_text(
+                            {
+                                **correlation,
+                                "component": "presentation",
+                                "event": "native_cancellation_presentation_failed",
+                                "operation": current_operation,
+                            }
+                        )
+                    )
+                finish(result)  # Log the last known facts; do not return or schedule inference.
                 raise WorkspaceInvocationStopped() from None
-            return json_text(result)
+            return finish(result)

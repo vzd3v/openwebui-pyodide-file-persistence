@@ -18,6 +18,7 @@ MODULES = (
     "openwebui_adapter",
     "workspace_execution",
     "workspace_recovery",
+    "tool_results",
     "tool",
 )
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,8 @@ def build() -> str:
     bodies: list[str] = []
     for module in MODULES:
         source = (ROOT / "src" / "pyodide_file_saver" / f"{module}.py").read_text()
+        if module == "contracts":
+            source = source.replace('TOOL_RELEASE = "source"', f'TOOL_RELEASE = "{VERSION}"')
         if module == "browser_asset":
             asset = ROOT / "build" / "browser-shell.js"
             if not asset.is_file():

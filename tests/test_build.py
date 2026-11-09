@@ -9,11 +9,11 @@ from collections.abc import Callable
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import ModuleType
-from typing import cast
+from typing import cast, get_type_hints
 
 import pytest
 from conftest import BrowserReply, DatabaseCase, HostHarness, open_host
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -46,6 +46,14 @@ def test_bundled_tool_loads_and_exposes_concrete_valve_schema(
     assert tool.valves.max_files == 64
     assert "max_total_bytes" in tool.Valves.model_json_schema()["properties"]
     assert "cwd" not in inspect.signature(tool.execute_code).parameters
+    hints = get_type_hints(tool.execute_code)
+    assert TypeAdapter[object](hints["action"]).json_schema()["enum"] == [
+        "execute",
+        "retry",
+        "status",
+        "recover",
+    ]
+    assert TypeAdapter[object](hints["language"]).json_schema()["enum"] == ["python", "bash"]
     # Match native settings POST strings, then its persisted integer JSON.
     settings = {
         "max_files": "64",
@@ -137,6 +145,7 @@ def test_build_cli_rejects_import_binding_collisions(
         "workspace_manifest",
         "workspace_execution",
         "workspace_recovery",
+        "tool_results",
     ):
         (source / f"{name}.py").write_text("")
     for name, content in {

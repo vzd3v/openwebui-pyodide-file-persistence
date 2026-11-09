@@ -10,6 +10,7 @@ from .browser_execution import import_hints
 from .contracts import (
     JSON_VALUE,
     BrowserFailure,
+    FailureCause,
     Limits,
     ManifestEntry,
     SaverError,
@@ -34,6 +35,7 @@ class WorkspaceReply(StrictModel):
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     execution_completed: bool = False
+    cause: FailureCause | None = None
     manifest: list[ManifestEntry] = Field(default_factory=list)
     files: list[TransferFile] = Field(default_factory=list)
 
@@ -45,6 +47,10 @@ async def __FUNCTION__():
     cfg = jsn.loads(__CONFIG__)
     import os, stat, base64, hashlib, io, contextlib, traceback, ast, inspect, sys
     from uuid import uuid4
+    class WorkspaceInvariantError(ValueError):
+        def __init__(self, code):
+            self.code = code
+            super().__init__(code)
     runtime_id = getattr(bi, "_pyodide_file_saver_runtime_id", None)
     if runtime_id is None:
         runtime_id = str(uuid4())
@@ -59,7 +65,7 @@ async def __FUNCTION__():
         body.update(values)
         text = jsn.dumps(body, ensure_ascii=True, separators=(",", ":"))
         if len(text.encode()) + 1024 > cfg["limits"]["max_envelope_bytes"]:
-            raise ValueError("Retained delta exceeds callback limit")
+            raise WorkspaceInvariantError("callback_limit")
         return text
     if cfg["phase"] == "probe":
         return response()
@@ -85,9 +91,9 @@ async def __FUNCTION__():
                 return response(outcome="recovery_unavailable")
             continuation = True
         if continuation and not (state and state["head"] == cfg["operation_id"]):
-            raise ValueError("Browser restore sequence changed")
+            raise WorkspaceInvariantError("restore_changed")
         if not continuation and cfg["warm"] and not warm:
-            raise ValueError("Browser workspace changed after preparation")
+            raise WorkspaceInvariantError("workspace_changed")
         if not continuation and not cfg["warm"]:
             # A conflicting/unacknowledged old root remains intact for diagnosis.
             root = "/tmp/pyodide-workspace-" + cfg["operation_id"]
@@ -102,10 +108,10 @@ async def __FUNCTION__():
         def target(relative):
             if (not relative or relative.startswith("/") or "\\" in relative
                     or any(p in ("", ".", "..") for p in relative.split("/"))):
-                raise ValueError("Invalid relative path")
+                raise WorkspaceInvariantError("invalid_path")
             full = root + "/" + relative
             if os.path.commonpath([root, os.path.realpath(full)]) != root:
-                raise ValueError("Path escaped managed root")
+                raise WorkspaceInvariantError("path_escape")
             return full
         def regular(relative):
             full = target(relative)
@@ -114,19 +120,19 @@ async def __FUNCTION__():
             for name in relative.split("/"):
                 parent += "/" + name
                 if os.path.islink(parent):
-                    raise ValueError("Links cannot enter retained snapshots")
+                    raise WorkspaceInvariantError("retained_link")
             return full
         for name in ("work", "scripts", "outputs", "inputs"):
             full = regular(name)
             os.makedirs(full, exist_ok=True)
             if not stat.S_ISDIR(os.lstat(full).st_mode):
-                raise ValueError("Managed directory replaced")
+                raise WorkspaceInvariantError("managed_directory")
         for name in ("inputs", "scripts", "outputs"):
             alias = root + "/work/" + name
             expected = "../" + name
             if os.path.lexists(alias):
                 if not os.path.islink(alias) or os.readlink(alias) != expected:
-                    raise ValueError("Managed convenience alias replaced")
+                    raise WorkspaceInvariantError("managed_alias")
             else:
                 os.symlink(expected, alias)
         os.makedirs(root + "/work/tmp", exist_ok=True)
@@ -149,10 +155,10 @@ async def __FUNCTION__():
             with open(full, "rb") as stream:
                 actual = hashlib.file_digest(stream, "sha256").hexdigest()
             if actual != entry["sha256"] or os.path.getsize(full) != entry["size"]:
-                raise ValueError("Native input bytes changed")
+                raise WorkspaceInvariantError("input_changed")
         cwd = root if cfg["cwd"] == "." else target(cfg["cwd"])
         if not os.path.isdir(cwd):
-            raise ValueError("Requested cwd does not exist")
+            raise WorkspaceInvariantError("missing_cwd")
         async def execute():
             record_base = "scripts/.runs"
             while record_base in cfg["legacy_paths"]:
@@ -271,15 +277,15 @@ async def __FUNCTION__():
                 **evidence)
         # Aliases are checked again after arbitrary user code, but never traversed.
         if os.path.realpath(root) != root or not stat.S_ISDIR(os.lstat(root).st_mode):
-            raise ValueError("Managed root replaced")
+            raise WorkspaceInvariantError("managed_root")
         for name in ("inputs", "scripts", "outputs"):
             alias = root + "/work/" + name
             if not os.path.islink(alias) or os.readlink(alias) != "../"+name:
-                raise ValueError("Managed convenience alias replaced")
+                raise WorkspaceInvariantError("managed_alias")
         for entry in cfg["inputs"]:
             with open(regular(entry["path"]), "rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
-                    raise ValueError("Read-only native input was modified; copy it to work/ first")
+                    raise WorkspaceInvariantError("input_changed")
         paths = set(cfg["legacy_paths"])
         for base in ("scripts", "outputs"):
             for directory, dirs, names in os.walk(regular(base), followlinks=False):
@@ -287,7 +293,7 @@ async def __FUNCTION__():
                     relative = os.path.relpath(os.path.join(directory, name), root)
                     metadata = os.lstat(regular(relative))
                     if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
-                        raise ValueError("Only regular retained files are supported")
+                        raise WorkspaceInvariantError("retained_type")
                 paths.update(os.path.relpath(os.path.join(directory, name), root) for name in names)
         manifest, changed, total = [], [], 0
         baseline = {f["path"]: f["sha256"] for f in cfg["baseline"]}
@@ -296,13 +302,15 @@ async def __FUNCTION__():
             if not os.path.exists(full):
                 continue
             if not stat.S_ISREG(os.lstat(full).st_mode):
-                raise ValueError("Invalid retained regular file")
+                raise WorkspaceInvariantError("retained_type")
             size = os.path.getsize(full)
             total += size
-            if (size > cfg["limits"]["max_file_bytes"]
-                    or total > cfg["limits"]["max_total_bytes"]
-                    or len(manifest) >= cfg["limits"]["max_files"]):
-                raise ValueError("Retained file limits exceeded; scratch work/ is independent")
+            if size > cfg["limits"]["max_file_bytes"]:
+                raise WorkspaceInvariantError("retained_file_limit")
+            if total > cfg["limits"]["max_total_bytes"]:
+                raise WorkspaceInvariantError("retained_total_limit")
+            if len(manifest) >= cfg["limits"]["max_files"]:
+                raise WorkspaceInvariantError("retained_count_limit")
             with open(full, "rb") as stream:
                 sha = hashlib.file_digest(stream, "sha256").hexdigest()
             manifest.append(dict(path=relative, sha256=sha, size=size))
@@ -313,11 +321,22 @@ async def __FUNCTION__():
         state["head"] = cfg["operation_id"]
         return response(outcome="ok" if evidence["exit_code"] == 0 else "execution_error",
             **evidence, manifest=manifest, files=changed)
-    except Exception:
+    except Exception as error:
         pending_evidence = (state.get("execution", {}) if state
             and state.get("head") == cfg["operation_id"] else {})
+        # Never serialize exception messages, filenames, source or locals. Even
+        # class names are selected from built-in types, not arbitrary user classes.
+        kind = next((t.__name__ for t in (FileNotFoundError, PermissionError, ValueError,
+            OSError, RuntimeError, TypeError, MemoryError) if isinstance(error, t)), "Exception")
+        cause = dict(code=error.code if isinstance(error, WorkspaceInvariantError)
+            else "snapshot_exception", exception_type=kind, frame="", line=0)
+        tb = error.__traceback__
+        while tb:
+            if tb.tb_frame.f_code.co_name == "__FUNCTION__":
+                cause.update(frame="managed_workspace", line=min(tb.tb_lineno, 10000))
+            tb = tb.tb_next
         return response(outcome="snapshot_error",
-            **(evidence or pending_evidence))
+            cause=cause, **(evidence or pending_evidence))
     finally:
         bi.__import__ = old_import
         try:

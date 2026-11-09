@@ -286,7 +286,10 @@ async def execute_workspace(
         )
     if reply.outcome == "snapshot_error":
         raise BrowserFailure(
-            "Browser retained snapshot failed", "browser_snapshot_failed", reply.phase
+            "Browser retained snapshot failed",
+            "browser_snapshot_failed",
+            reply.phase,
+            cause=reply.cause,
         )
     if not recovering:
         config.update(phase="snapshot", code="", shell_asset="")
@@ -296,7 +299,10 @@ async def execute_workspace(
             raise SaverError("Invalid browser snapshot phase")
         if snapshot.outcome == "snapshot_error":
             raise BrowserFailure(
-                "Browser retained snapshot failed", "browser_snapshot_failed", "snapshot"
+                "Browser retained snapshot failed",
+                "browser_snapshot_failed",
+                "snapshot",
+                cause=snapshot.cause,
             )
         if any(getattr(snapshot, key) != getattr(reply, key) for key in COMPLETION_FIELDS):
             raise SaverError("Snapshot completion evidence changed after acknowledgement")

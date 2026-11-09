@@ -37,6 +37,7 @@ from .contracts import (
     SCHEMA_VERSION,
     BoundContext,
     ExecutionBlocked,
+    FailureCause,
     FileSlot,
     OperationDiagnostics,
     Receipt,
@@ -551,6 +552,8 @@ class WorkspaceState:
         | None = None,
         failure_code: str = "",
         session_failed: bool = False,
+        request_failed: bool = True,
+        cause: FailureCause | None = None,
     ) -> OperationDiagnostics:
         async with self.transaction() as session:
             # Match allocation's lock order so it cannot observe the failure
@@ -570,7 +573,19 @@ class WorkspaceState:
             if dispatch is not None:
                 diagnostic.dispatch = dispatch
             if failure_code:
+                now = time.time()
+                if not diagnostic.first_failure_code:
+                    # An older diagnostic's original event time is unavailable.
+                    legacy_failure = bool(diagnostic.failure_code)
+                    diagnostic.first_failure_code = diagnostic.failure_code or failure_code
+                    diagnostic.first_failure_phase = (
+                        "unknown" if legacy_failure else diagnostic.phase
+                    )
+                    diagnostic.first_failure_at = None if legacy_failure else now
+                    diagnostic.first_failure_cause = diagnostic.cause if legacy_failure else cause
                 diagnostic.failure_code = failure_code
+                diagnostic.last_failure_at = now
+                diagnostic.cause = cause
             constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
             active = int(
                 not receipt.execution_completed
@@ -590,7 +605,7 @@ class WorkspaceState:
             )
             if failure_code:
                 for key in (
-                    diagnostic.request_key,
+                    diagnostic.request_key if request_failed else "",
                     diagnostic.session_key if session_failed else "",
                 ):
                     if key:
@@ -623,7 +638,10 @@ class WorkspaceState:
             query = query.with_for_update()
         raw = await session.scalar(query)
         if not isinstance(raw, str):
-            raise SaverError("Saved operation is missing or is not in this actor/chat workspace")
+            raise SaverError(
+                "Saved operation is missing or is not in this actor/chat workspace",
+                "operation_unavailable",
+            )
         receipt = Receipt.model_validate_json(raw)
         if (
             receipt.actor_id != context.actor_id

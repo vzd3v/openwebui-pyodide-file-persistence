@@ -51,11 +51,45 @@ The result includes an exit code and truncation flags when execution was accepte
 link. Include those Markdown links verbatim in the assistant answer; do not invent
 filesystem URLs or substitute attachment cards or Controls instructions.
 
+All ordinary results have `status`, `error_code`, `message` and `error`.
+Success uses `status="success"`, `error_code="none"` and `error=null`.
+Program errors, workspace conflicts and input/storage refusals use `status="error"`
+with a readable top-level `error`, including when execution completed or private
+files were saved. This shape supports the native Tool error marker; actual
+visibility and agent continuation still require acceptance on the installed host.
+
+Read `execution_outcome`, `persistence_outcome` and `publication_outcome`
+independently. A code error can have a committed private checkpoint without
+published files. `status` itself succeeds when it reads a failed operation.
+Validation failures return a safe field/type and correction example, an
+`invocation_id`, and no operation ID before a saved operation is established.
+The public action/language annotations expose enum constraints to schema generators.
+Correct an invalid call instead of repeating it; explain an uncompleted task and
+its permitted next step in the user's request language. The Tool does not schedule
+another model call or promise an explanation after Stop, deadline or disconnection.
+
+An oversized selected input reports its opaque File ID, effective byte limit and
+known size, or `size_lower_bound_bytes` when only a bounded read establishes it.
+A known pre-dispatch input refusal permits a corrected execute in the same request;
+it does not require reconnecting. Unknown execution and completed unsaved work
+retain their existing replay fences.
+
 `browser_workspace` identifies new, warm or restored execution and its acknowledged
 base operation. Early failures and older receipts can report `unknown`. It does
 not promise that the worker is still alive or that scratch remains available.
 Callback failures include a content-free `error_code` and `phase` when available;
 raw host/provider errors are not returned.
+Snapshot failures also retain an allowlisted invariant code, built-in exception
+category and managed-wrapper frame/line; they exclude exception text, paths,
+source and locals. Diagnostics preserve the first recorded failure separately
+from the latest attempt, with event timestamps independent of receipt update time.
+Older records without a failure timestamp keep that time unknown.
+
+The backend emits correlated `invocation_started`/`invocation_finished` metadata
+with the Tool release, trusted chat/message/task identifiers when available,
+optional operation ID, duration and separate outcomes. It excludes source, file
+bytes, rejected values and raw exception messages. Bounded program stdout/stderr
+remain in the existing protected receipt rather than operational log events.
 
 `recovery_plan` derives instructions from retained evidence. Its `execution` is
 `not_started` for a recorded pre-dispatch failure, `unknown` when execution might

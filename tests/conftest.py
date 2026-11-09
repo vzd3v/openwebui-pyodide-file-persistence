@@ -34,6 +34,7 @@ from sqlalchemy.pool import NullPool
 
 from pyodide_file_saver.contracts import (
     JSON_VALUE,
+    ActionName,
     BoundContext,
     FileBytes,
     FileSlot,
@@ -386,7 +387,7 @@ class HostHarness:
         self,
         browser: EventCall | None = None,
         *,
-        action: str = "execute",
+        action: ActionName = "execute",
         operation_id: str = "",
         context: BoundContext | None = None,
         files: list[dict[str, JsonValue]] | None = None,

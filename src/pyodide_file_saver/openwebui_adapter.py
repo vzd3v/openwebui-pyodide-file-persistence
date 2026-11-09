@@ -7,6 +7,7 @@ import importlib
 import inspect
 import io
 import mimetypes
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
@@ -830,7 +831,10 @@ class OpenWebUIAdapter:
                 .one_or_none()
             )
             if row is None:
-                raise SaverError("Saved or attached File was deleted; it will not be recreated")
+                raise SaverError(
+                    "Saved or attached File was deleted; it will not be recreated",
+                    "file_unavailable",
+                )
             if row["user_id"] != context.actor_id:
                 user = await self.users_api.get_user_by_id(context.actor_id)
                 if (
@@ -841,15 +845,20 @@ class OpenWebUIAdapter:
                         or await self.file_access(file_id, "read", user, db=session) is True
                     )
                 ):
-                    raise SaverError("File is not readable by this actor")
+                    raise SaverError("File is not readable by this actor", "file_access_denied")
             if await self._empty_file(session, row):
                 return b""
             path = require_string(row["path"])
         try:
             provider_path = require_string(await asyncio.to_thread(self.storage.get_file, path))
             data = await asyncio.to_thread(self._read_bounded, provider_path, maximum)
+        except SaverError as error:
+            error.details["file_id"] = file_id
+            raise
         except (OSError, ValueError) as error:
-            raise SaverError("Provider bytes are missing or unavailable") from error
+            raise SaverError(
+                "Provider bytes are missing or unavailable", "provider_bytes_unavailable"
+            ) from error
         return data
 
     async def authorize_file(
@@ -863,7 +872,10 @@ class OpenWebUIAdapter:
                 .one_or_none()
             )
             if row is None:
-                raise SaverError("Saved or attached File was deleted; it will not be recreated")
+                raise SaverError(
+                    "Saved or attached File was deleted; it will not be recreated",
+                    "file_unavailable",
+                )
             if row["user_id"] != context.actor_id:
                 user = await self.users_api.get_user_by_id(context.actor_id)
                 if (
@@ -874,7 +886,7 @@ class OpenWebUIAdapter:
                         or await self.file_access(file_id, "read", user, db=session) is True
                     )
                 ):
-                    raise SaverError("File is not readable by this actor")
+                    raise SaverError("File is not readable by this actor", "file_access_denied")
             path = "" if await self._empty_file(session, row) else require_string(row["path"])
             return require_string(row["filename"]), path
 
@@ -944,7 +956,11 @@ class OpenWebUIAdapter:
             await self.authorize_file(context, slot.file_id)
             seen.add(slot.file_id)
         if len(attachments) > limits.max_files:
-            raise SaverError("Attached input count exceeds the configured limit")
+            raise SaverError(
+                "Attached input count exceeds the configured limit",
+                "input_count_limit",
+                details={"count": len(attachments), "limit_count": limits.max_files},
+            )
         for item in attachments:
             if item.get("type") not in {None, "file"}:
                 continue
@@ -975,7 +991,17 @@ class OpenWebUIAdapter:
             if old:
                 result.append(old.model_copy(deep=True))
             else:
-                data = await self.read_file(context, file_id, limits.max_file_bytes)
+                try:
+                    data = await self.read_file(context, file_id, limits.max_file_bytes)
+                except SaverError as error:
+                    if error.error_code == "file_too_large":
+                        raise SaverError(
+                            "Selected input exceeds the configured byte limit; "
+                            "reduce or change the input",
+                            "input_too_large",
+                            details=error.details,
+                        ) from error
+                    raise
                 fresh.append(path)
                 result.append(
                     FileSlot(
@@ -988,15 +1014,31 @@ class OpenWebUIAdapter:
                     )
                 )
         if len(result) > limits.max_files:
-            raise SaverError("Referenced input count exceeds the configured limit")
+            raise SaverError(
+                "Referenced input count exceeds the configured limit",
+                "input_count_limit",
+                details={"count": len(result), "limit_count": limits.max_files},
+            )
         return result, fresh
 
     @staticmethod
     def _read_bounded(path: str, maximum: int) -> bytes:
         with Path(path).open("rb") as stream:
             data = stream.read(maximum + 1)
+            size = os.fstat(stream.fileno()).st_size
         if len(data) > maximum:
-            raise SaverError("Provider file exceeds the configured byte limit")
+            raise SaverError(
+                "Provider file exceeds the configured byte limit",
+                "file_too_large",
+                details={
+                    "limit_bytes": maximum,
+                    **(
+                        {"size_bytes": size}
+                        if size >= len(data)
+                        else {"size_lower_bound_bytes": len(data)}
+                    ),
+                },
+            )
         return data
 
     async def verify_slot(self, context: BoundContext, slot: FileSlot, maximum: int) -> bytes:
@@ -1031,8 +1073,17 @@ class OpenWebUIAdapter:
             return receipt
         if digest(data) != slot.sha256 or len(data) != slot.size:
             raise SaverError("Bytes do not match the reserved File receipt")
-        if len(data) > await self.host_max_bytes(maximum):
-            raise SaverError("File exceeds the host upload-size policy")
+        effective_maximum = await self.host_max_bytes(maximum)
+        if len(data) > effective_maximum:
+            raise SaverError(
+                "File exceeds the host upload-size policy",
+                "file_too_large",
+                details={
+                    "file_id": slot.file_id,
+                    "size_bytes": len(data),
+                    "limit_bytes": effective_maximum,
+                },
+            )
         name = safe_filename(slot.path)
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         # A fresh object name for EVERY attempt is essential: concurrent retries
