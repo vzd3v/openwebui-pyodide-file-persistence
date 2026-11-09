@@ -79,9 +79,16 @@ catalog download returns a dependency error before the program starts. This does
 not install arbitrary PyPI packages or make blocked imports available.
 Imports hidden inside a saved script, dynamic imports and package probes do not
 automatically load its dependencies: put explicit outer imports or an approved
-installation step before running the saved script. For example, `import numpy`
-before `exec(Path("scripts/analysis.py").read_text())` requests NumPy again in a
-fresh worker. Packages outside the catalog still need an approved explicit recipe.
+installation step before running the saved script. For a NumPy script, submit:
+
+```python
+import numpy
+from pathlib import Path
+exec(Path("scripts/analysis.py").read_text())
+```
+
+This requests NumPy again in a fresh worker. Packages outside the catalog still
+need an approved explicit recipe.
 
 `ModuleNotFoundError` means an import is unavailable in the current worker. An
 asset 404 is a package-delivery problem for the administrator; an incompatible
@@ -97,6 +104,16 @@ and returned text. Scratch stdout/stderr logs have the same per-stream text cap.
 Other scratch still consumes browser memory; these limits do not
 promise enough RAM for a particular calculation. Large results need smaller
 retained outputs, not a blind retry or a larger callback timeout.
+
+Estimate large outputs before execution; ask for current limits through `status`.
+If completed work exceeds a save limit, a new cleanup or resizing program is also
+blocked. Follow the returned recovery plan or explain the limitation.
+
+Keep each filename or directory component within 255 UTF-8 bytes; short names
+(up to 180 bytes) are preferable. Some browser filesystems can create longer names
+but truncate them during directory enumeration, preventing a retained snapshot.
+Native upload names are bounded separately; shortening one does not rename the
+original workspace path or repair an already overlong browser filename.
 
 Only new or changed outputs from successful execution become chat attachments.
 Programs, state and run records stay private owner/admin-visible Files. Printing

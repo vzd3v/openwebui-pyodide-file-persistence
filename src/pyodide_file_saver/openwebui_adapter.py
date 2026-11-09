@@ -396,9 +396,11 @@ class NativeBrowserConnection:
 
     async def ensure_route(self) -> None:
         """Reconnect before mutation; never replay an already-sent mutable callback."""
+        await self.adapter.validate_generation(
+            self.context, self.metadata, require_task=self.pool is not None
+        )
         if self.pool is None:
             return
-        await self.adapter.validate_generation(self.context, self.metadata, require_task=True)
         if self.live(self.session_id):
             return
         payload, operation_id, nonce = self.probe_request(self.session_id)
@@ -538,14 +540,45 @@ class OpenWebUIAdapter:
         not_started = (
             isinstance(receipt, dict) and receipt.get("execution_outcome") == "not_started"
         )
+        completed_unsaved = (
+            isinstance(receipt, dict)
+            and receipt.get("execution_completed") is True
+            and receipt.get("workspace_saved") is not True
+        )
+        cause = receipt.get("cause") if isinstance(receipt, dict) else None
+        save_limit = isinstance(cause, dict) and cause.get("code") in {
+            "retained_file_limit",
+            "retained_total_limit",
+            "retained_count_limit",
+        }
+        if completed_unsaved:
+            content = (
+                "The program finished, but retained files exceed a saving limit. "
+                if save_limit
+                else "The program finished, but its files could not be saved. "
+            ) + (
+                "New execution, including cleanup or resizing, is blocked. "
+                "Inspect status and the recovery plan; do not rerun the program."
+            )
+        elif not_started:
+            content = (
+                "The program did not start. Inspect operation status and follow its recovery plan."
+            )
+        elif isinstance(receipt, dict) and receipt.get("workspace_saved") is True:
+            content = (
+                "Existing results are saved, but further execution is blocked in this request "
+                "or browser session. Inspect status and follow its recovery plan."
+            )
+        else:
+            content = (
+                "The execution outcome is unresolved; the program may still be running. "
+                "Keep the original tab, inspect status and do not rerun the program."
+            )
         error: dict[str, JsonValue] = {
-            "content": (
-                "The program did not start. Reconnect the browser and send a new message "
-                "to continue from the last saved workspace."
-                if not_started
-                else "Browser execution is unavailable. Inspect operation status before continuing."
-            ),
-            "type": "workspace_executor_unavailable",
+            "content": content,
+            "type": "workspace_recovery_required"
+            if completed_unsaved
+            else "workspace_executor_unavailable",
             "diagnostic": diagnostic,
         }
         async with self.state.transaction() as session:
@@ -1022,35 +1055,29 @@ class OpenWebUIAdapter:
                 if own and any(slot.file_id == file_id for slot in own.outputs):
                     continue
             path = f"inputs/{file_id}/{safe_filename(name.replace(chr(92), '/').split('/')[-1])}"
-            old = next(
-                (slot for slot in previous if slot.file_id == file_id and slot.path == path), None
-            )
-            if old:
-                result.append(old.model_copy(deep=True))
-            else:
-                try:
-                    data = await self.read_file(context, file_id, limits.max_file_bytes)
-                except SaverError as error:
-                    error.details.update(file_id=file_id, input_origin="new")
-                    if error.error_code == "file_too_large":
-                        raise SaverError(
-                            "Selected input exceeds the configured byte limit; "
-                            "reduce or change the input",
-                            "input_too_large",
-                            details=error.details,
-                        ) from error
-                    raise
-                fresh.append(path)
-                result.append(
-                    FileSlot(
-                        path=path,
-                        file_id=file_id,
-                        sha256=digest(data),
-                        size=len(data),
-                        committed=True,
-                        representation="empty" if provider_path == "" else "provider",
-                    )
+            try:
+                data = await self.read_file(context, file_id, limits.max_file_bytes)
+            except SaverError as error:
+                error.details.update(file_id=file_id, input_origin="new")
+                if error.error_code == "file_too_large":
+                    raise SaverError(
+                        "Selected input exceeds the configured byte limit; "
+                        "reduce or change the input",
+                        "input_too_large",
+                        details=error.details,
+                    ) from error
+                raise
+            fresh.append(path)
+            result.append(
+                FileSlot(
+                    path=path,
+                    file_id=file_id,
+                    sha256=digest(data),
+                    size=len(data),
+                    committed=True,
+                    representation="empty" if provider_path == "" else "provider",
                 )
+            )
             check_input_budget("new")
         if len(result) > limits.max_files:
             raise SaverError(

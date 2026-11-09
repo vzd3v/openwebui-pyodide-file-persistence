@@ -174,6 +174,29 @@ These checks do not qualify every host/provider, guarantee arbitrary program
 memory use or recover bytes after the original worker is lost. Native upload
 policy can reject a file before a File ID or Tool invocation exists.
 
+## 0.3.0a2 native qualification
+
+The assembled Tool SHA-256 is
+`491db343032c139b5bd5df2c32caf41240b390a798ca4c9d676ac15429108b49`.
+Focused native checks used Chromium, Open WebUI 0.12.3 with local customizations,
+PostgreSQL and local storage; this was not a pristine upstream installation.
+
+- Three 20 MiB outputs matched downloaded hashes. Long ASCII and Unicode workspace
+  names survived fresh-worker restoration while native upload names stayed bounded.
+- A lost HTTP upload response was recovered by electing the original verified
+  File ID. Recovery did not replay user source; execution counters remained one.
+- Ordinary agent checks used both requested inputs, answered an English request
+  in English, inspected current limits before splitting a 21 MiB output, and
+  corrected a Python program error within the same Russian-language response.
+- Callbacks contained metadata, with a largest observed reply of 1756 bytes.
+  The disposable browser/harness container peaked at 795230208 bytes under a
+  2 GiB cap. This is a synthetic workload measurement, not a parser-memory guarantee.
+
+Automated real-database checks also cover revoked access or replaced generations
+before dispatch, bounded optional status delivery, and preserving saved results
+when presentation fails. These fixtures do not establish native fault delivery on
+every host. Earlier qualification remains scoped to its recorded artifact.
+
 ## Version-sensitive integration
 
 Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3

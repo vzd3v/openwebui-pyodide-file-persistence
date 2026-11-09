@@ -48,7 +48,7 @@ from pyodide_file_saver.contracts import (
     json_text,
 )
 from pyodide_file_saver.openwebui_adapter import EventCall, OpenWebUIAdapter
-from pyodide_file_saver.tool import Tools
+from pyodide_file_saver.tool import EventEmitter, Tools
 
 
 def checkpoint_bytes(files: list[FileBytes]) -> bytes:
@@ -394,6 +394,7 @@ class HostHarness:
         tool: Tools | None = None,
         metadata: dict[str, JsonValue] | None = None,
         input_file_ids: list[str] | None = None,
+        emitter: EventEmitter | None = None,
     ) -> dict[str, JsonValue]:
         context = context or self.context
         result = JSON_VALUE.validate_json(
@@ -408,6 +409,7 @@ class HostHarness:
                 __request__=object(),
                 __metadata__=metadata,
                 __event_call__=browser,
+                __event_emitter__=emitter,
                 __files__=files,
             )
         )

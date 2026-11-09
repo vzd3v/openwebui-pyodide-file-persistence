@@ -23,8 +23,9 @@ see [Contributing](../../CONTRIBUTING.md).
 
 ## Install and configure
 
-1. Back up the database and file storage normally. Keep browser persistence
-   enabled and existing browser files intact.
+1. Keep browser persistence enabled and existing browser files intact. For an
+   existing registration, follow the [upgrade guidance](#upgrade-an-existing-tool)
+   before changing it.
 2. Open [Releases](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases).
    Under **Assets** for the release you want, download `openwebui_pyodide_file_saver.py`.
    GitHub lists a SHA-256 digest with the asset for verifying your download.
@@ -112,9 +113,10 @@ Each field's description states its units.
 
 ## Upgrade an existing Tool
 
-Back up the database and Files, verify the new release asset, then update the
-existing registration in place. Preserve its access grants and saved Valve
-values; source defaults do not replace them. Review the [limits and rollback
+Save a private preimage of the existing Tool registration/source, access grants
+and server Valves. Verify the new release asset, then update that registration
+in place. Preserve its ID, UserValves, Files and chats; source defaults do not
+replace saved Valve values. Review the [limits and rollback
 compatibility](#limits), then repeat the [installation checks](#check-your-installation)
 before making the update available to users.
 

@@ -278,7 +278,9 @@ def test_binary_orchestration_recovers_lost_upload_without_source_replay(
 
     class NativeBrowser(BrowserReply):
         def __init__(self, host: HostHarness) -> None:
-            super().__init__([FileBytes("outputs/a.bin", b"native result")])
+            # Native local storage prefixes a UUID; a long extension must not
+            # overflow its filesystem component limit on the fallback path.
+            super().__init__([FileBytes("outputs/a." + "x" * 220, b"native result")])
             self.host = host
 
         async def __call__(self, payload: dict[str, JsonValue]) -> object:
@@ -293,6 +295,9 @@ def test_binary_orchestration_recovers_lost_upload_without_source_replay(
                 assert (
                     config["code"] == "" and not config.get("code_b64") and config["restore"] == []
                 )
+                filename = config["upload_filename"]
+                assert isinstance(filename, str) and len(filename.encode()) <= 180
+                assert filename != self.files[0].path.split("/")[-1]
                 remaining = config["http_timeout_seconds"]
                 assert isinstance(remaining, (float, int)) and 0 < remaining <= 120
                 operation_id = config["operation_id"]

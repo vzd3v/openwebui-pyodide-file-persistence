@@ -28,6 +28,7 @@ from .contracts import (
     encode_files,
     issued_paths,
     json_text,
+    safe_filename,
     safe_relative_path,
     transfer_deadline,
 )
@@ -404,6 +405,7 @@ async def execute_workspace(
                 code="",
                 shell_asset="",
                 native_transfer=transfer.model_dump(),
+                upload_filename=safe_filename(transfer.path),
                 upload_url=adapter.native_upload_url(),
                 http_timeout_seconds=remaining,
             )

@@ -9,7 +9,7 @@ from typing import BinaryIO, cast, get_type_hints
 
 import pytest
 from conftest import BrowserReply, DatabaseCase, HostHarness, open_host
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -25,6 +25,46 @@ from pyodide_file_saver.contracts import (
 from pyodide_file_saver.openwebui_adapter import OpenWebUIAdapter
 from pyodide_file_saver.tool import Tools
 from pyodide_file_saver.tool_results import exception_diagnostic
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure", ["hang", "error", "cancel"])
+def test_saved_result_survives_failed_presentation_without_swallowing_cancellation(
+    database_case: DatabaseCase,
+    host_factory: Callable[[AsyncEngine, str | None], HostHarness],
+    failure: str,
+) -> None:
+    async def scenario() -> None:
+        async with open_host(database_case, host_factory) as host:
+            browser = BrowserReply([FileBytes("outputs/result.txt", b"saved")])
+            attempted = drained = False
+
+            async def emitter(_payload: dict[str, JsonValue]) -> object:
+                nonlocal attempted, drained
+                attempted = True
+                try:
+                    if failure == "hang":
+                        await asyncio.Event().wait()
+                    if failure == "cancel":
+                        raise asyncio.CancelledError
+                    raise RuntimeError("synthetic presentation failure")
+                finally:
+                    drained = True
+
+            if failure == "cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await host.call(browser, emitter=emitter)
+            else:
+                result = await asyncio.wait_for(host.call(browser, emitter=emitter), timeout=8)
+                assert result["status"] == "success" and result["state"] == "published"
+                assert result["issued_files"]
+            assert attempted and drained and browser.calls == 1
+            operation_id = browser.configs[-1]["operation_id"]
+            assert isinstance(operation_id, str)
+            receipt = await OpenWebUIAdapter().state.get(host.context, operation_id)
+            assert receipt.state == "published" and receipt.checkpoint.committed
+
+    asyncio.run(scenario())
 
 
 def test_public_arguments_expose_enum_schema() -> None:
