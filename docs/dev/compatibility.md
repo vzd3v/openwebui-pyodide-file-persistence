@@ -149,6 +149,31 @@ These focused checks do not qualify pristine upstream installations, delegated
 or approval/resume paths, remote storage, lost-restore acknowledgement replay,
 provider-stream continuation or recovery of a destroyed interpreter.
 
+## 0.3.0a1 native qualification
+
+The assembled Tool SHA-256 is
+`3992ca5a843909ef647f160c01f327126b3d14d53ac7370d66181f4eb02deb9a`.
+Scoped native checks used Open WebUI 0.12.3 with local customizations,
+PostgreSQL and local storage; this was not a pristine upstream installation.
+
+- Exact 20 MiB native input and output bytes, three-file 60 MiB output,
+  fresh-worker restoration and authenticated shared downloads matched hashes.
+  Foreign users could not read outputs; private checkpoints/scripts stayed private.
+- Lost HTTP upload responses and lost upload callbacks were tested separately.
+  Recovery adopted the original verified File without replaying user source.
+  Explicit Stop retained an unknown-outcome fence until a separate recovery
+  request obtained completion evidence in the original worker.
+- Ordinary errors remained available to the configured agent. An empty call and
+  an oversized selected input were corrected within their respective requests.
+  With a configured lower file limit, explicit selection excluded a new oversized
+  input; `[]` preserved the acknowledged inherited input.
+- Fresh-worker PIL/xlrd loading, permitted legacy docx loading, explicit imports
+  before a saved script and fresh globals were checked through native calls.
+
+These checks do not qualify every host/provider, guarantee arbitrary program
+memory use or recover bytes after the original worker is lost. Native upload
+policy can reject a file before a File ID or Tool invocation exists.
+
 ## Version-sensitive integration
 
 Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3
@@ -172,6 +197,12 @@ and [0.12.2 storage providers](https://github.com/open-webui/open-webui/blob/v0.
 Source inspection is not runtime acceptance for every host.
 
 ## Saved-data compatibility
+
+**0.3.0a1:** reads earlier receipts/checkpoints and preserves existing native Files.
+New receipts include optional native-transfer reservations; diagnostics add
+structured failure facts. Earlier strict readers reject these new fields.
+After writing new state or larger files, keep a compatible reader and limits;
+do not downgrade to an older binary or delete state to force compatibility.
 
 **0.2.0a6:** adds one Tool-owned browser-continuity table without changing the
 four earlier tables or receipt JSON. Earlier a5 readers ignore that additional
