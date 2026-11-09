@@ -74,12 +74,18 @@ restoration, shell errors and rejected links. It proves browser-library behavior
 not native Open WebUI acceptance or available RAM on every device.
 
 It also checks completion before snapshot failure, source-free snapshot/recovery,
-single execution and bounded scratch logs. Database tests distinguish failures
+single execution and bounded scratch logs. A synthetic authenticated Files HTTP
+boundary exercises exact 20 MiB binary restore/upload/readback, fresh-worker restore,
+small callbacks, HTTP failure and changed-byte rejection. This does not qualify
+native host permissions, cookie configuration or target-device peak memory. Database tests distinguish failures
 before dispatch, during execution and after acknowledged completion, and check
 that recovery releases only the applicable request gate.
 Socket-boundary fixtures also check pre-dispatch reconnection against runtime
 identity, actor/chat/session freshness, generation replacement and cancellation.
-They reject replay after restore/execute dispatch. These are synthetic host
+They reject replay after restore/execute dispatch. Package preparation cases cover
+resolved-Promise error callbacks, blocked imports, SyntaxError deferral and lost
+acknowledgement without source dispatch. Input selection cases cover same-request
+correction and reauthorization of inherited inputs. These are synthetic host
 boundaries; native reconnect qualification still needs a real served frontend.
 The matrix includes a stale session that remains present while its callback
 stalls, delayed cancellation, replacement reuse on the next call, mismatched

@@ -36,7 +36,7 @@ PRELOAD_IMPORTS = frozenset(
 )
 
 
-def import_hints(code: str) -> str:
+def import_hints(code: str, blocked_modules: set[str] | None = None) -> str:
     """Non-executing hints for the stock frontend's supported-package detection."""
     hints: set[str] = set()
     try:
@@ -56,7 +56,13 @@ def import_hints(code: str) -> str:
                 "ExcelFile",
             }:
                 hints.add("openpyxl")
-    return "\n".join(f"# import {name}" for name in sorted(hints & PRELOAD_IMPORTS)) + "\n"
+    return (
+        "\n".join(
+            f"# import {name}"
+            for name in sorted((hints & PRELOAD_IMPORTS) - (blocked_modules or set()))
+        )
+        + "\n"
+    )
 
 
 def read_checkpoint(data: bytes, limits: Limits) -> list[FileBytes]:

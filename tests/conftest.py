@@ -34,6 +34,7 @@ from sqlalchemy.pool import NullPool
 
 from pyodide_file_saver.contracts import (
     JSON_VALUE,
+    ActionName,
     BoundContext,
     FileBytes,
     FileSlot,
@@ -156,7 +157,7 @@ class BrowserReply:
                 config = parsed
         assert config is not None and isinstance(config["restore"], list)
         self.configs.append(config)
-        if config.get("phase") in {"prepare", "probe"}:
+        if config.get("phase") in {"prepare", "probe", "packages"}:
             return {
                 "result": json_text(
                     {
@@ -386,12 +387,13 @@ class HostHarness:
         self,
         browser: EventCall | None = None,
         *,
-        action: str = "execute",
+        action: ActionName = "execute",
         operation_id: str = "",
         context: BoundContext | None = None,
         files: list[dict[str, JsonValue]] | None = None,
         tool: Tools | None = None,
         metadata: dict[str, JsonValue] | None = None,
+        input_file_ids: list[str] | None = None,
     ) -> dict[str, JsonValue]:
         context = context or self.context
         result = JSON_VALUE.validate_json(
@@ -399,6 +401,7 @@ class HostHarness:
                 code="print('synthetic')" if action == "execute" else "",
                 action=action,
                 operation_id=operation_id,
+                input_file_ids=input_file_ids,
                 __user__={"id": context.actor_id},
                 __chat_id__=context.chat_id,
                 __message_id__=context.message_id,

@@ -75,8 +75,10 @@ or a full Linux environment. Browser memory and available Pyodide packages limit
 what can run. Choose a server executor for GPU work, native binaries or background
 jobs. Open WebUI still needs storage for saved files.
 
-Default retained-file limits are 8 MiB per file and 8 MiB total. Scratch uses
-browser memory independently. Empty retained files require local storage.
+Default limits are 20 MiB per file, 64 MiB retained files and a separate 64 MiB
+for native inputs. Binary transfers use authenticated native Files HTTP routes;
+callbacks carry metadata. Scratch uses browser memory independently. These are
+byte budgets, not a device-memory guarantee. Empty retained files require local storage.
 
 - [User guide](docs/user/guide.md): examples, saving and recovery
 - [Execution limits and recovery](docs/user/limitations.md): browser, dependencies and uncertain work

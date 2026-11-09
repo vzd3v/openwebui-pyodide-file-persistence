@@ -17,8 +17,10 @@ behavior.
 3. Execute the submitted source once. Python and shell read/write the same Pyodide
    filesystem; there is no mirrored shell filesystem.
 4. Return a small completion acknowledgement and persist its bounded streams.
-   A separate source-free callback hashes retained files and transfers changed
-   bytes and a complete manifest; it does not scan or encode scratch.
+   A separate source-free callback hashes retained files and returns descriptors
+   and a complete manifest; it does not scan or encode scratch. Backend-issued
+   transfer keys commit before source-free callbacks upload changed nonempty files
+   through native multipart HTTP with `process=false`.
 5. Commit immutable file blobs, then the manifest. Select the workspace head with
    a revision compare-and-set.
 6. After successful execution, publish new/changed outputs using their existing
@@ -44,7 +46,9 @@ Payloads live in the configured file storage. Host-owned tables and migrations
 are unchanged. Database schema version remains one; defaulted receipt fields
 support version-two manifests while preserving older receipts.
 
-Diagnostics and gates are additive tables; existing receipt JSON is unchanged.
+Diagnostics and gates use additive tables. Optional native-transfer reservations
+are stored in existing receipt JSON; old receipts remain readable. Older strict
+receipt readers cannot read the new reservations, so rollback needs compatible code.
 Workspace-row locking serializes guarded allocation and failure recording across
 workers. Unknown execution remains fenced across messages/reconnects without TTL.
 Completed uncheckpointed work has a separate persistence fence protecting its root.
@@ -64,6 +68,16 @@ and its committed marker are atomic. Losing attempts can leave orphan objects;
 there is no automatic garbage collection. Partial transfers are unacknowledged,
 and deleted committed Files are never recreated automatically.
 
+Native HTTP chooses its own File ID. Immutable path/hash/size/transfer-key
+reservations precede upload; only independently verified owner/provider bytes can
+be adopted. The operation lock elects one native FileSlot per path. Actual bytes
+are rehashed because native HTTP accepts client-supplied hash metadata. Lost HTTP
+responses and lost callbacks are reconciled through bounded owner/operation/key
+lookup in native Files before another upload. Metadata is only a lookup hint.
+Duplicate unelected native Files remain private; no automatic deletion is attempted.
+The small checkpoint keeps its original reserved ID and server-storage path.
+A complete exact manifest is required before checkpoint/head/publication.
+
 Publication locks Chat then operation receipt. It merges Chat/ChatMessage
 attachment lists without changing message content/output, creates missing ChatFile
 links, and commits publication atomically. Only issued outputs get chat grants.
@@ -75,8 +89,13 @@ Native events use `files=[]`. The wrapper uses public `pyodide_js.FS`,
 Pyodide instance or worker internals. The shell registers its own namespace only.
 
 Warm execution sends no inherited retained bytes and reuses the shell bundle
-when its digest matches. Cold restoration reads and verifies one bounded File at
-a time, sends sequential restore callbacks, then executes the program once.
+when its digest matches. Cold restoration sends authorized descriptors sequentially.
+The existing worker
+fetches native binary content into the managed root and checks exact size/hash
+before executing the program once. Response streaming is bounded to the expected
+size, each HTTP request has a deadline and the restore stage has a total deadline.
+No native upload staging directory or browser IDBFS import is used. Legacy version-one
+checkpoints retain their original bounded restore path.
 
 On the inspected Open WebUI 0.12.3 socket contract, pre-dispatch reconnection
 can recognize the original interpreter by its runtime UUID. Only fresh,
@@ -118,8 +137,9 @@ Completion streams are captured before snapshot/recipe work. The execution reply
 is durably acknowledged before the separate snapshot callback. Later replies
 must preserve that completion evidence. `recover` snapshots
 only the current exact pending root after completion; it never runs source.
-Partially uploaded snapshots must match every reserved path/hash/size and reuse
-its immutable IDs. `retry` reconstructs a missing manifest only after all blobs
+Partially uploaded snapshots must match every reserved path/hash/size/key and reuse
+its elected immutable IDs. Native `retry` can discover/adopt already uploaded bytes
+without a browser, including after a lost upload response. `retry` reconstructs a missing manifest only after all blobs
 are committed and verified. Both paths retain head CAS and current grants.
 
 ## Code map
@@ -132,6 +152,7 @@ Python modules are under `src/pyodide_file_saver/`.
 | `contracts.py` | Actions, limits, receipts, path validation |
 | `workspace_state.py` | Tables, durable receipts, revision compare-and-set |
 | `workspace_execution.py` | Authorization, bounded restoration, delta commits |
+| `workspace_transfer.py` | Native transfer reservation, reconciliation and source-free saving |
 | `workspace_manifest.py` | Version-two immutable-blob manifests |
 | `workspace_recovery.py` | Recovery instructions derived from durable evidence |
 | `openwebui_adapter.py` | Version-sensitive host, storage and chat integration |

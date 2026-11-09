@@ -10,6 +10,7 @@ For ordinary chat use, start with the [user guide](../user/guide.md).
 | `action` | `execute` (default), `retry`, `recover`, `status` | Run, finish saving without rerunning, or inspect operations |
 | `code` | Source text | Required for execution; empty for other actions |
 | `language` | `python` (default), `bash` | Browser execution language |
+| `input_file_ids` | Optional list of current attachment IDs | Execute only; omitted admits all new attachments, `[]` admits none; acknowledged inputs remain required |
 | `operation_id` | Server-issued ID | Required for retry/recover; optional for status; absent for execution |
 
 Every new `execute` runs a new program. Never substitute it for a retry after an
@@ -17,7 +18,8 @@ uncertain outcome. `status` without an ID lists recent operations without stream
 with an ID it includes retained File metadata, accepted bounded stdout/stderr and actual execution
 outcome when available. Status never issues links and does not recheck old bytes
 or grants. `retry` revalidates saved bytes and access before finishing publication,
-without executing the program or recovering missing transfer bytes.
+without executing the program. It can discover/adopt native uploads whose HTTP
+response or callback was lost; bytes never uploaded still require the original browser.
 
 Status returns the acknowledged `head`, up to 32 `unresolved` execution blockers,
 and up to 32 `recoverable` completed/saved operations independently of the recent
@@ -46,16 +48,59 @@ authenticated `/api/v1/files/{id}/content?attachment=true` route (empty Files us
 `/content/download?attachment=true`). Status metadata itself does not verify
 current bytes/access or grant access to another chat.
 
+Authenticated results expose `limits.configured` and the effective per-file upload
+ceiling after the host size policy is applied. `upload_policy_status="unavailable"`
+means that ceiling is unknown; status remains readable, while actual uploads still
+validate policy. Other native restrictions are not preflighted. These values do not
+promise browser RAM or permission to exceed native policy.
+
 The result includes an exit code and truncation flags when execution was accepted.
 `issued_files` includes each retained relative path, size, SHA-256 and Markdown
 link. Include those Markdown links verbatim in the assistant answer; do not invent
 filesystem URLs or substitute attachment cards or Controls instructions.
+
+All ordinary results have `status`, `error_code`, `message` and `error`.
+Success uses `status="success"`, `error_code="none"` and `error=null`.
+Program errors, workspace conflicts and input/storage refusals use `status="error"`
+with a readable top-level `error`, including when execution completed or private
+files were saved. This shape supports the native Tool error marker; actual
+visibility and agent continuation still require acceptance on the installed host.
+
+Read `execution_outcome`, `persistence_outcome` and `publication_outcome`
+independently. A code error can have a committed private checkpoint without
+published files. `status` itself succeeds when it reads a failed operation.
+Validation failures return a safe field/type and correction example, an
+`invocation_id`, and no operation ID before a saved operation is established.
+The public action/language annotations expose enum constraints to schema generators.
+Correct an invalid call instead of repeating it; explain an uncompleted task and
+its permitted next step in the user's request language. The Tool does not schedule
+another model call or promise an explanation after Stop, deadline or disconnection.
+
+An oversized selected input reports its opaque File ID, effective byte limit and
+known size, or `size_lower_bound_bytes` when only a bounded read establishes it.
+A known pre-dispatch refusal for a newly selected input permits a corrected execute
+in the same request with an explicitly chosen authorized subset or `[]`. Explain
+any omitted required input. Selection cannot admit an ID absent from the injected
+attachments or remove acknowledged inputs; their access must be restored.
+It does not require reconnecting. Unknown execution and completed unsaved work
+retain their existing replay fences.
 
 `browser_workspace` identifies new, warm or restored execution and its acknowledged
 base operation. Early failures and older receipts can report `unknown`. It does
 not promise that the worker is still alive or that scratch remains available.
 Callback failures include a content-free `error_code` and `phase` when available;
 raw host/provider errors are not returned.
+Snapshot failures also retain an allowlisted invariant code, built-in exception
+category and managed-wrapper frame/line; they exclude exception text, paths,
+source and locals. Diagnostics preserve the first recorded failure separately
+from the latest attempt, with event timestamps independent of receipt update time.
+Older records without a failure timestamp keep that time unknown.
+
+The backend emits correlated `invocation_started`/`invocation_finished` metadata
+with the Tool release, trusted chat/message/task identifiers when available,
+optional operation ID, duration and separate outcomes. It excludes source, file
+bytes, rejected values and raw exception messages. Bounded program stdout/stderr
+remain in the existing protected receipt rather than operational log events.
 
 `recovery_plan` derives instructions from retained evidence. Its `execution` is
 `not_started` for a recorded pre-dispatch failure, `unknown` when execution might
@@ -102,10 +147,25 @@ jq -r '.values[]' scripts/state/data.json | awk '{sum += $1} END {print sum}' > 
 ## Python and shell
 
 Each Python call has fresh globals. Import names again or run a retained program.
-Installed packages may remain available in a warm worker. Static imports provide
-Open WebUI package-loading hints; `importlib.import_module()` and `find_spec()`
-probes do not request that preload. Use explicit imports or supported
-Pyodide/micropip installation. Native subprocesses and OS threads are unavailable.
+Installed packages may remain available in a warm worker. Before dispatching Python,
+the Tool submits unblocked static import roots to the public Pyodide
+[`loadPackagesFromImports`](https://pyodide.org/en/stable/usage/api/js-api.html#pyodide.loadPackagesFromImports)
+API. The runtime catalog resolves import names to packages (for example `PIL` to
+Pillow); the Tool maintains no separate package-name map. A catalog delivery
+failure returns `dependency_unavailable` without starting user source. The assistant
+may correct its dependency choice or explain the administrative delivery problem.
+A lost loading acknowledgement retains the request fence: a timeout does not
+prove that the installer stopped.
+
+Imports hidden in saved scripts, `importlib.import_module()` and `find_spec()` probes
+are not discovered. Put explicit outer imports before running a saved script, or
+use administrator-permitted Pyodide/micropip loading for packages outside the catalog.
+Filtered non-executing hints preserve native frontend loading for its existing
+permitted packages, including document libraries outside the runtime catalog.
+Command metadata is encoded so the frontend cannot bypass that filter by scanning
+raw source inside JSON. This is separate from binary file transfer.
+A syntax-invalid program bypasses loading and reports its normal Python SyntaxError.
+Native subprocesses and OS threads are unavailable.
 
 The bundled [just-bash](https://github.com/vercel-labs/just-bash) browser library
 provides pipelines, redirection, loops and selected commands:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pydantic import JsonValue
 
 from .contracts import OperationDiagnostics, Receipt
+from .tool_results import INPUT_ACCESS_REFUSALS, correctable_refusal
+from .workspace_manifest import retained_ready
 
 
 def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[str, JsonValue]:
@@ -17,22 +19,79 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             "instructions": "Use retry with this operation_id and no code to verify saved bytes.",
         }
     if receipt.execution_completed:
-        committed = receipt.checkpoint_version == 2 and all(
-            slot.committed for slot in receipt.blobs
-        )
+        committed = receipt.checkpoint_version == 2 and retained_ready(receipt)
         return {
             "execution": "completed",
             "next_step": "finish_publication" if committed else "save_completed_files",
-            "tool_actions": ["status", "retry" if committed else "recover"],
+            "tool_actions": (
+                ["status", "retry", "recover"]
+                if receipt.native_transfers is not None and not committed
+                else ["status", "retry" if committed else "recover"]
+            ),
             "needs_browser": not committed,
             "instructions": (
                 "Use retry with this operation_id and no code; all reserved bytes were saved."
                 if committed
+                else "Use retry without code to reconcile native uploads first; if files remain "
+                "unsaved, use recover in the original live browser. Never rerun the program."
+                if receipt.native_transfers is not None
                 else "Use recover with this operation_id and no code in the original live "
                 "browser. The program finished; do not execute it again to save its files."
             ),
         }
     if diagnostic.dispatch == "not_dispatched" and diagnostic.failure_code:
+        if diagnostic.failure_code == "dependency_unavailable":
+            return {
+                "execution": "not_started",
+                "next_step": "correct_dependencies",
+                "tool_actions": ["status", "execute"],
+                "needs_browser": True,
+                "instructions": "The program did not start. Use supported explicit imports or "
+                "approved package loading; ask an administrator to check catalog asset delivery "
+                "when needed. Then submit a corrected execute; do not repeat an unchanged failure.",
+            }
+        if (
+            diagnostic.failure_code in INPUT_ACCESS_REFUSALS
+            or diagnostic.input_origin == "inherited"
+        ):
+            correction = correctable_refusal(diagnostic.failure_code, diagnostic.input_origin)
+            return {
+                "execution": "not_started",
+                "next_step": "correct_inputs" if correction else "restore_required_input_access",
+                "tool_actions": ["status", "execute"] if correction else ["status"],
+                "needs_browser": False,
+                "instructions": (
+                    "The program did not start. A newly selected input is unavailable. Restore "
+                    "its access, or explicitly select a permitted attachment subset for a "
+                    "corrected execute. Explain any limitation before omitting a required file."
+                    if correction
+                    else "The program did not start. Restore availability/access of the required "
+                    "input or review the configured input limits. input_file_ids cannot remove "
+                    "acknowledged inputs. Preserve the saved head; reconnecting cannot repair this."
+                ),
+            }
+        if diagnostic.failure_code == "browser_restore_failed":
+            return {
+                "execution": "not_started",
+                "next_step": "restore_required_files",
+                "tool_actions": ["status"],
+                "needs_browser": True,
+                "needs_new_request": True,
+                "instructions": "The program did not start. Check availability, access and exact "
+                "bytes of the required saved/input Files before a new request. Preserve the "
+                "acknowledged head; reconnecting alone cannot repair deleted or changed files.",
+            }
+        if correctable_refusal(diagnostic.failure_code, diagnostic.input_origin):
+            return {
+                "execution": "not_started",
+                "next_step": "correct_inputs",
+                "tool_actions": ["status", "execute"],
+                "needs_browser": True,
+                "instructions": (
+                    "The program did not start. Correct the selected inputs or reduce their size, "
+                    "then submit a corrected execute. Do not repeat the unchanged rejected call."
+                ),
+            }
         return {
             "execution": "not_started",
             "next_step": "reconnect_before_new_execution",

@@ -311,6 +311,7 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
 def test_native_error_rechecks_generation_under_chat_lock(
     database_case: DatabaseCase,
     host_factory: Callable[[AsyncEngine, str | None], HostHarness],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
@@ -351,6 +352,26 @@ def test_native_error_rechecks_generation_under_chat_lock(
                 assert not done
             with pytest.raises(SaverError, match="generation"):
                 await stop
+
+            async def missing_message(
+                message: str,
+                chat: str,
+                actor: str,
+                patch: dict[str, JsonValue],
+                db: AsyncSession | None = None,
+            ) -> object:
+                return None
+
+            monkeypatch.setattr(
+                sys.modules["open_webui.models.chat_messages"],
+                "ChatMessages",
+                SimpleNamespace(upsert_message=missing_message),
+                raising=False,
+            )
+            with pytest.raises(SaverError, match="could not be persisted"):
+                await adapter.persist_stop(
+                    host.context, {"task_id": replacement}, {"operation_id": "synthetic"}
+                )
             async with adapter.state.sessions() as session:
                 _, message = await adapter.validate_context(session, host.context)
                 assert "error" not in message and message["meta"] == {"task_id": replacement}
@@ -484,7 +505,9 @@ def test_partial_blob_recovery_reuses_reserved_ids_and_rejects_changed_snapshot(
             final = await adapter.state.get(host.context, operation)
             assert [slot.file_id for slot in final.blobs] == immutable_ids
             recovery_calls = [item for item in browser.configs if item["phase"] == "recover"]
-            assert len(recovery_calls) == 2 and all(item["code"] == "" for item in recovery_calls)
+            assert len(recovery_calls) == 2 and all(
+                item["code"] == "" and not item.get("code_b64") for item in recovery_calls
+            )
             assert not [item for item in browser.configs[2:] if item["phase"] == "prepare"]
 
     asyncio.run(scenario())

@@ -62,8 +62,13 @@ promise browser-console secrecy.
 
 ## Resource and compatibility limits
 
-Retained transfers stay below stock 16 MiB callbacks and the 60-second frontend
-timeout. A backend timeout does not prove that the browser worker stopped.
+Callbacks carry metadata below the stock 16 MiB ceiling and remain below the
+60-second frontend timeout. Nonempty file bytes use native same-origin cookie-authenticated
+HTTP in the existing worker; no Bearer token is exported into wrapper source.
+Native HTTP metadata and hashes are untrusted: adoption verifies owner, frozen
+reservation and actual provider bytes before electing one File ID. Per-file,
+retained/input aggregate and HTTP/stage deadlines bound transfers; HTTP avoids
+base64 expansion but is not a zero-copy or device-memory guarantee. A backend timeout does not prove that the browser worker stopped.
 Durable gates limit repeat dispatch across workers and reconnects; they do not
 guarantee exactly-once arbitrary code or bound a model's token use. Known failure
 envelopes are normalized fail-closed protocol signals, not trusted browser claims.
@@ -92,8 +97,12 @@ commands are disabled. The maintainer dependency graph still includes
 `guarded-fetch`'s pinned Undici with a
 [Node networking advisory](https://github.com/advisories/GHSA-w293-vg96-wgc3).
 
-The esbuild [Windows development-server advisory](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr)
-concerns a build dependency; this project uses the build API without a server.
+No newer `just-bash` release currently removes that pinned transitive dependency.
+Do not treat an audit-suggested shell downgrade as a compatible security update.
+The current supported Undici 7.x security fixes are recorded in its
+[upstream releases](https://github.com/nodejs/undici/releases/tag/v7.30.2).
+The Tool does not enable that Node networking path.
+
 The browser includes `sprintf-js`, which has an
 [unpatched precision advisory](https://github.com/advisories/GHSA-hp3w-g68c-fv3c).
 The pinned shell bounds precision and returns formatting failures as command

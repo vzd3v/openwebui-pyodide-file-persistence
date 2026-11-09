@@ -8,6 +8,8 @@ import binascii
 import hashlib
 import json
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
@@ -16,25 +18,82 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model
 
 HOST_SOCKET_LIMIT = 16 * 1024 * 1024
 FILENAME_BYTES = 180
+MAX_MANAGED_FILES = 256
+NATIVE_FILE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 SCHEMA_VERSION = 1
+TOOL_RELEASE = "source"  # The standalone builder substitutes the project version.
+ActionName = Literal["execute", "retry", "status", "recover"]
+LanguageName = Literal["python", "bash"]
+InputOrigin = Literal["", "new", "inherited"]
+
+
+class FailureCause(BaseModel):
+    """Bounded structural evidence, never exception messages, paths or locals."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    code: Literal[
+        "snapshot_exception",
+        "callback_limit",
+        "restore_changed",
+        "workspace_changed",
+        "invalid_path",
+        "path_escape",
+        "retained_link",
+        "managed_directory",
+        "managed_alias",
+        "input_changed",
+        "missing_cwd",
+        "managed_root",
+        "retained_type",
+        "retained_file_limit",
+        "retained_total_limit",
+        "retained_count_limit",
+        "transfer_http",
+        "transfer_timeout",
+        "transfer_request_failed",
+        "transfer_changed",
+    ] = "snapshot_exception"
+    exception_type: Literal[
+        "ValueError",
+        "OSError",
+        "FileNotFoundError",
+        "PermissionError",
+        "RuntimeError",
+        "TypeError",
+        "MemoryError",
+        "Exception",
+    ] = "Exception"
+    frame: Literal["managed_workspace", ""] = ""
+    line: int = Field(default=0, ge=0, le=10000)
+    http_status: int = Field(default=0, ge=0, le=599)
 
 
 class SaverError(Exception):
     """Safe, content-free failure suitable for a Tool result."""
 
-    def __init__(self, message: str, error_code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        error_code: str | None = None,
+        *,
+        details: dict[str, JsonValue] | None = None,
+    ):
         super().__init__(message)
         self.error_code = error_code
+        self.details = details or {}
 
 
 class BrowserFailure(SaverError):
     """Classified callback failure without copying host or browser error text."""
 
-    def __init__(self, message: str, error_code: str, phase: str):
+    def __init__(
+        self, message: str, error_code: str, phase: str, *, cause: FailureCause | None = None
+    ):
         super().__init__(message)
         self.error_code = error_code
         self.phase = phase
+        self.cause = cause
 
 
 class StrictModel(BaseModel):
@@ -52,6 +111,13 @@ class OperationDiagnostics(StrictModel):
     request_key: str = ""
     session_key: str = ""
     request_scope: Literal["task", "message"] = "message"
+    first_failure_code: str = ""
+    first_failure_phase: str = ""
+    first_failure_at: float | None = None
+    last_failure_at: float | None = None
+    cause: FailureCause | None = None
+    first_failure_cause: FailureCause | None = None
+    input_origin: InputOrigin = ""
 
 
 class ExecutionBlocked(SaverError):
@@ -73,26 +139,38 @@ class Limits(StrictModel):
     max_files: int = Field(
         default=64,
         ge=1,
-        le=256,
+        le=MAX_MANAGED_FILES,
         description=(
             "Maximum retained regular files in the managed workspace "
             "(scratch work/ is excluded); count, not bytes."
         ),
     )
     max_file_bytes: int = Field(
-        default=8 * 1024 * 1024,
+        default=20 * 1024 * 1024,
         ge=1,
-        lt=HOST_SOCKET_LIMIT,
+        le=1024 * 1024 * 1024,
         description="Maximum decoded bytes per managed file; host upload policy may lower it.",
     )
     max_total_bytes: int = Field(
-        default=8 * 1024 * 1024,
+        default=64 * 1024 * 1024,
         ge=1,
-        lt=HOST_SOCKET_LIMIT,
+        le=1024 * 1024 * 1024,
         description=(
             "Maximum decoded bytes across retained files, "
             "excluding transient work/ and referenced native inputs."
         ),
+    )
+    max_input_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1,
+        le=1024 * 1024 * 1024,
+        description="Maximum decoded bytes across inherited and newly selected native inputs.",
+    )
+    transfer_timeout_seconds: int = Field(
+        default=120,
+        ge=1,
+        le=600,
+        description="Total seconds for sequential binary transfers; HTTP calls are bounded too.",
     )
     max_envelope_bytes: int = Field(
         default=15 * 1024 * 1024,
@@ -124,15 +202,41 @@ class Limits(StrictModel):
     )
 
 
+@asynccontextmanager
+async def transfer_deadline(seconds: int, phase: str) -> AsyncIterator[asyncio.Timeout]:
+    """Normalize only this stage's expired deadline; preserve external cancellation."""
+    deadline = asyncio.timeout(seconds)
+    try:
+        async with deadline:
+            yield deadline
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        raise BrowserFailure(
+            "File transfer stage timed out; inspect this operation before recovery",
+            "transfer_timeout",
+            phase,
+            cause=FailureCause(code="transfer_timeout", exception_type="Exception"),
+        ) from None
+
+
 class Action(StrictModel):
-    action: Literal["execute", "retry", "status", "recover"] = "execute"
+    action: ActionName = "execute"
     code: str = ""
-    language: Literal["python", "bash"] = "python"
+    language: LanguageName = "python"
     cwd: str = "work"
     operation_id: str = ""
+    input_file_ids: list[str] | None = Field(default=None, max_length=MAX_MANAGED_FILES)
 
     @model_validator(mode="after")
     def validate_action(self) -> Action:
+        if self.input_file_ids is not None:
+            if self.action != "execute":
+                raise ValueError("input_file_ids is only valid for execute")
+            if len(set(self.input_file_ids)) != len(self.input_file_ids) or any(
+                not NATIVE_FILE_ID_PATTERN.fullmatch(value) for value in self.input_file_ids
+            ):
+                raise ValueError("input_file_ids requires distinct native File IDs")
         if self.action == "execute":
             if not self.code.strip() or self.operation_id:
                 raise ValueError("execute requires code and no operation_id")
@@ -173,6 +277,15 @@ class FileSlot(StrictModel):
         return self
 
 
+class NativeTransfer(StrictModel):
+    """Backend-issued immutable correlation, never a native File identifier."""
+
+    path: str
+    transfer_key: str
+    sha256: str
+    size: int = Field(gt=0)
+
+
 class Receipt(StrictModel):
     schema_version: Literal[1] = 1
     operation_id: str
@@ -193,6 +306,7 @@ class Receipt(StrictModel):
     stderr: str = ""
     checkpoint_version: Literal[1, 2] = 1
     blobs: list[FileSlot] = Field(default_factory=list)
+    native_transfers: list[NativeTransfer] | None = None
     inputs: list[FileSlot] = Field(default_factory=list)
     legacy_paths: list[str] = Field(default_factory=list)
     language: Literal["python", "bash"] = "python"

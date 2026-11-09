@@ -7,6 +7,7 @@ import importlib
 import inspect
 import io
 import mimetypes
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
@@ -23,16 +24,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from .browser_workspace import workspace_reply, workspace_wrapper
 from .contracts import (
     JSON_VALUE,
+    NATIVE_FILE_ID_PATTERN,
     BoundContext,
     BrowserFailure,
     FileSlot,
     Limits,
+    NativeTransfer,
     OperationDiagnostics,
     Receipt,
     SaverError,
     digest,
+    issued_paths,
     safe_filename,
 )
+from .workspace_manifest import retained_ready
 from .workspace_state import WorkspaceState
 
 
@@ -830,7 +835,10 @@ class OpenWebUIAdapter:
                 .one_or_none()
             )
             if row is None:
-                raise SaverError("Saved or attached File was deleted; it will not be recreated")
+                raise SaverError(
+                    "Saved or attached File was deleted; it will not be recreated",
+                    "file_unavailable",
+                )
             if row["user_id"] != context.actor_id:
                 user = await self.users_api.get_user_by_id(context.actor_id)
                 if (
@@ -841,15 +849,20 @@ class OpenWebUIAdapter:
                         or await self.file_access(file_id, "read", user, db=session) is True
                     )
                 ):
-                    raise SaverError("File is not readable by this actor")
+                    raise SaverError("File is not readable by this actor", "file_access_denied")
             if await self._empty_file(session, row):
                 return b""
             path = require_string(row["path"])
         try:
             provider_path = require_string(await asyncio.to_thread(self.storage.get_file, path))
             data = await asyncio.to_thread(self._read_bounded, provider_path, maximum)
+        except SaverError as error:
+            error.details["file_id"] = file_id
+            raise
         except (OSError, ValueError) as error:
-            raise SaverError("Provider bytes are missing or unavailable") from error
+            raise SaverError(
+                "Provider bytes are missing or unavailable", "provider_bytes_unavailable"
+            ) from error
         return data
 
     async def authorize_file(
@@ -863,7 +876,10 @@ class OpenWebUIAdapter:
                 .one_or_none()
             )
             if row is None:
-                raise SaverError("Saved or attached File was deleted; it will not be recreated")
+                raise SaverError(
+                    "Saved or attached File was deleted; it will not be recreated",
+                    "file_unavailable",
+                )
             if row["user_id"] != context.actor_id:
                 user = await self.users_api.get_user_by_id(context.actor_id)
                 if (
@@ -874,7 +890,7 @@ class OpenWebUIAdapter:
                         or await self.file_access(file_id, "read", user, db=session) is True
                     )
                 ):
-                    raise SaverError("File is not readable by this actor")
+                    raise SaverError("File is not readable by this actor", "file_access_denied")
             path = "" if await self._empty_file(session, row) else require_string(row["path"])
             return require_string(row["filename"]), path
 
@@ -940,11 +956,38 @@ class OpenWebUIAdapter:
         result = [slot.model_copy(deep=True) for slot in previous]
         fresh: list[str] = []
         seen: set[str] = set()
+
+        def check_input_budget(origin: str) -> None:
+            total = sum(slot.size for slot in result)
+            if total > limits.max_input_bytes:
+                raise SaverError(
+                    "Native inputs exceed the configured aggregate byte limit",
+                    "input_total_too_large",
+                    details={
+                        "limit_bytes": limits.max_input_bytes,
+                        "size_bytes": total,
+                        "input_origin": origin,
+                    },
+                )
+
+        check_input_budget("inherited")
         for slot in previous:
-            await self.authorize_file(context, slot.file_id)
+            try:
+                await self.authorize_file(context, slot.file_id)
+            except SaverError as error:
+                error.details.update(file_id=slot.file_id, input_origin="inherited")
+                raise
             seen.add(slot.file_id)
         if len(attachments) > limits.max_files:
-            raise SaverError("Attached input count exceeds the configured limit")
+            raise SaverError(
+                "Attached input count exceeds the configured limit",
+                "input_count_limit",
+                details={
+                    "count": len(attachments),
+                    "limit_count": limits.max_files,
+                    "input_origin": "new",
+                },
+            )
         for item in attachments:
             if item.get("type") not in {None, "file"}:
                 continue
@@ -952,15 +995,25 @@ class OpenWebUIAdapter:
             if file_id in seen:
                 continue
             seen.add(file_id)
-            if len(file_id) > 128 or not all(char.isalnum() or char in "-_" for char in file_id):
+            if not NATIVE_FILE_ID_PATTERN.fullmatch(file_id):
                 raise SaverError("Unsupported attached File identifier")
-            name, provider_path = await self.authorize_file(context, file_id)
+            try:
+                name, provider_path = await self.authorize_file(context, file_id)
+            except SaverError as error:
+                error.details.update(file_id=file_id, input_origin="new")
+                raise
             # Skip this Tool's own issued attachments only after independent receipt proof.
             async with self.state.sessions() as session:
                 raw = await session.scalar(
                     select(self.files.c.meta).where(self.files.c.id == file_id)
                 )
-            hint = json_object(raw or {}).get("pyodide_file_saver_operation")
+            own_meta = json_object(raw or {})
+            hint = own_meta.get("pyodide_file_saver_operation")
+            if not isinstance(hint, str):
+                marker = json_object(
+                    json_object(own_meta.get("data", {})).get("pyodide_file_saver", {})
+                )
+                hint = marker.get("operation_id")
             if isinstance(hint, str):
                 try:
                     own = await self.state.get(context, hint)
@@ -975,7 +1028,18 @@ class OpenWebUIAdapter:
             if old:
                 result.append(old.model_copy(deep=True))
             else:
-                data = await self.read_file(context, file_id, limits.max_file_bytes)
+                try:
+                    data = await self.read_file(context, file_id, limits.max_file_bytes)
+                except SaverError as error:
+                    error.details.update(file_id=file_id, input_origin="new")
+                    if error.error_code == "file_too_large":
+                        raise SaverError(
+                            "Selected input exceeds the configured byte limit; "
+                            "reduce or change the input",
+                            "input_too_large",
+                            details=error.details,
+                        ) from error
+                    raise
                 fresh.append(path)
                 result.append(
                     FileSlot(
@@ -987,16 +1051,37 @@ class OpenWebUIAdapter:
                         representation="empty" if provider_path == "" else "provider",
                     )
                 )
+            check_input_budget("new")
         if len(result) > limits.max_files:
-            raise SaverError("Referenced input count exceeds the configured limit")
+            raise SaverError(
+                "Referenced input count exceeds the configured limit",
+                "input_count_limit",
+                details={
+                    "count": len(result),
+                    "limit_count": limits.max_files,
+                    "input_origin": "new" if len(result) > len(previous) else "inherited",
+                },
+            )
         return result, fresh
 
     @staticmethod
     def _read_bounded(path: str, maximum: int) -> bytes:
         with Path(path).open("rb") as stream:
             data = stream.read(maximum + 1)
+            size = os.fstat(stream.fileno()).st_size
         if len(data) > maximum:
-            raise SaverError("Provider file exceeds the configured byte limit")
+            raise SaverError(
+                "Provider file exceeds the configured byte limit",
+                "file_too_large",
+                details={
+                    "limit_bytes": maximum,
+                    **(
+                        {"size_bytes": size}
+                        if size >= len(data)
+                        else {"size_lower_bound_bytes": len(data)}
+                    ),
+                },
+            )
         return data
 
     async def verify_slot(self, context: BoundContext, slot: FileSlot, maximum: int) -> bytes:
@@ -1006,6 +1091,137 @@ class OpenWebUIAdapter:
         if len(data) != slot.size or digest(data) != slot.sha256:
             raise SaverError("Saved File bytes do not match their acknowledged receipt")
         return data
+
+    @staticmethod
+    def native_content_url(file_id: str) -> str:
+        # Native opaque identifiers only; never accept a model/browser supplied URL.
+        if (
+            not file_id
+            or len(file_id) > 128
+            or not all(char.isascii() and (char.isalnum() or char in "-_") for char in file_id)
+        ):
+            raise SaverError("Invalid native File identifier", "native_file_invalid")
+        return "/api/v1/files/" + file_id + "/content"
+
+    @staticmethod
+    def native_upload_url() -> str:
+        return "/api/v1/files/?process=false"
+
+    async def find_native_upload(
+        self, context: BoundContext, operation_id: str, transfer: NativeTransfer
+    ) -> str | None:
+        """Bounded exact-key lookup also works when the HTTP response was lost."""
+        marker = self.files.c.meta["data"]["pyodide_file_saver"]
+        async with self.state.sessions() as session:
+            candidates = list(
+                await session.scalars(
+                    select(self.files.c.id)
+                    .where(
+                        self.files.c.user_id == context.actor_id,
+                        marker["operation_id"].as_string() == operation_id,
+                        marker["transfer_key"].as_string() == transfer.transfer_key,
+                    )
+                    .order_by(self.files.c.created_at, self.files.c.id)
+                    .limit(17)
+                )
+            )
+        if len(candidates) > 16:
+            raise SaverError(
+                "Too many unacknowledged native uploads; inspect this operation",
+                "native_upload_candidates_exceeded",
+            )
+        return str(candidates[0]) if candidates else None
+
+    async def adopt_native_upload(
+        self,
+        context: BoundContext,
+        operation_id: str,
+        path: str,
+        file_id: str | None,
+        maximum: int,
+    ) -> Receipt:
+        receipt = await self.state.get(context, operation_id)
+        transfer = next(
+            (item for item in receipt.native_transfers or [] if item.path == path), None
+        )
+        if transfer is None:
+            raise SaverError("Native transfer was not reserved", "native_transfer_unreserved")
+        elected = next((slot for slot in receipt.blobs if slot.path == path), None)
+        if elected is not None:
+            await self.verify_slot(context, elected, maximum)
+            return receipt
+        candidate = file_id or await self.find_native_upload(context, operation_id, transfer)
+        if candidate is None:
+            raise SaverError("No acknowledged native upload is available", "native_upload_missing")
+        async with self.state.sessions() as session:
+            original = (
+                (await session.execute(select(self.files).where(self.files.c.id == candidate)))
+                .mappings()
+                .first()
+            )
+        if original is None or original["user_id"] != context.actor_id:
+            raise SaverError(
+                "Native upload belongs to another owner or is missing",
+                "native_upload_owner_mismatch",
+            )
+        expected_marker = {"operation_id": operation_id, "transfer_key": transfer.transfer_key}
+        metadata = json_object(json_object(original["meta"] or {}).get("data", {}))
+        if metadata.get("pyodide_file_saver") != expected_marker:
+            raise SaverError(
+                "Native upload correlation does not match the reservation",
+                "native_upload_key_mismatch",
+            )
+        # Native HTTP accepts a client-supplied file_hash. Only actual provider bytes
+        # establish integrity; never use native metadata/hash as an attestation.
+        data = await self.read_file(context, candidate, maximum, owned=True)
+        if len(data) != transfer.size or digest(data) != transfer.sha256:
+            raise SaverError(
+                "Native upload bytes do not match the frozen snapshot",
+                "native_upload_bytes_mismatch",
+            )
+        async with self.state.transaction() as session:
+            saved = await self.state.load(session, operation_id, context, lock=True)
+            current = next(
+                (item for item in saved.native_transfers or [] if item.path == path), None
+            )
+            if current != transfer:
+                raise SaverError("Native transfer reservation changed", "native_transfer_changed")
+            elected = next((slot for slot in saved.blobs if slot.path == path), None)
+            if elected is None:
+                if saved.state != "allocated":
+                    raise SaverError("Native snapshot is already sealed", "native_transfer_changed")
+                row = (
+                    (
+                        await session.execute(
+                            select(self.files).where(self.files.c.id == candidate).with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None or any(
+                    row[key] != original[key] for key in ("user_id", "path", "meta")
+                ):
+                    raise SaverError(
+                        "Native upload changed during verification", "native_upload_changed"
+                    )
+                slot = FileSlot(
+                    path=path,
+                    file_id=candidate,
+                    sha256=transfer.sha256,
+                    size=transfer.size,
+                    committed=True,
+                )
+                saved.blobs.append(slot)
+                order = {item.path: index for index, item in enumerate(saved.files)}
+                saved.blobs.sort(key=lambda item: order[item.path])
+                if path in issued_paths(saved.files, saved.baseline) and saved.python_ok:
+                    saved.outputs.append(slot.model_copy(deep=True))
+                    saved.outputs.sort(key=lambda item: order[item.path])
+                await self.state.put(session, saved)
+        elected = next(slot for slot in saved.blobs if slot.path == path)
+        await self.verify_slot(context, elected, maximum)
+        return saved
 
     @staticmethod
     def slot(receipt: Receipt, path: str | None) -> FileSlot:
@@ -1031,8 +1247,17 @@ class OpenWebUIAdapter:
             return receipt
         if digest(data) != slot.sha256 or len(data) != slot.size:
             raise SaverError("Bytes do not match the reserved File receipt")
-        if len(data) > await self.host_max_bytes(maximum):
-            raise SaverError("File exceeds the host upload-size policy")
+        effective_maximum = await self.host_max_bytes(maximum)
+        if len(data) > effective_maximum:
+            raise SaverError(
+                "File exceeds the host upload-size policy",
+                "file_too_large",
+                details={
+                    "file_id": slot.file_id,
+                    "size_bytes": len(data),
+                    "limit_bytes": effective_maximum,
+                },
+            )
         name = safe_filename(slot.path)
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         # A fresh object name for EVERY attempt is essential: concurrent retries
@@ -1099,9 +1324,7 @@ class OpenWebUIAdapter:
                         output.committed = True
                         output.representation = elected.representation
                 if path is None:
-                    if receipt.checkpoint_version == 2 and not all(
-                        blob.committed for blob in receipt.blobs
-                    ):
+                    if receipt.checkpoint_version == 2 and not retained_ready(receipt):
                         raise SaverError("Retained blobs must be committed before the manifest")
                     receipt.state = "saved"
                 await self.state.put(session, receipt)

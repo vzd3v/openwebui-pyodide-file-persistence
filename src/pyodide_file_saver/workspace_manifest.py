@@ -43,12 +43,19 @@ def validate_manifest(manifest: WorkspaceManifest, limits: Limits) -> None:
         raise SaverError("Retained manifest has conflicting paths")
     for slot in manifest.inputs:
         safe_relative_path(slot.path)
-        if (
-            not slot.path.startswith("inputs/")
-            or not slot.committed
-            or slot.size > limits.max_file_bytes
-        ):
+        if not slot.path.startswith("inputs/") or not slot.committed:
             raise SaverError("Invalid native input reference")
+        if slot.size > limits.max_file_bytes:
+            raise SaverError(
+                "Acknowledged input exceeds the configured byte limit; restore the input policy",
+                "input_too_large",
+                details={
+                    "file_id": slot.file_id,
+                    "input_origin": "inherited",
+                    "limit_bytes": limits.max_file_bytes,
+                    "size_bytes": slot.size,
+                },
+            )
 
 
 def manifest_bytes(receipt: Receipt) -> bytes:
@@ -74,3 +81,22 @@ def parse_manifest(data: bytes, receipt: Receipt, limits: Limits) -> WorkspaceMa
 
 def slot_entry(slot: FileSlot) -> ManifestEntry:
     return ManifestEntry(path=slot.path, sha256=slot.sha256, size=slot.size)
+
+
+def retained_ready(receipt: Receipt) -> bool:
+    """A partial native upload set must never look like an empty complete snapshot."""
+    return (
+        all(slot.committed for slot in receipt.blobs)
+        and [slot_entry(slot) for slot in receipt.blobs] == receipt.files
+        and (
+            receipt.native_transfers is None
+            or all(
+                any(
+                    slot_entry(slot)
+                    == ManifestEntry(path=item.path, sha256=item.sha256, size=item.size)
+                    for slot in receipt.blobs
+                )
+                for item in receipt.native_transfers
+            )
+        )
+    )

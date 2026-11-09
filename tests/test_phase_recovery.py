@@ -66,7 +66,11 @@ def test_callback_loss_reports_the_actual_dispatch_state(
                 recovered = await host.call(browser, action="recover", operation_id=operation_id)
                 assert recovered["state"] == "published"
                 assert len([c for c in browser.configs if c["phase"] == "execute"]) == 1
-                assert all(c["code"] == "" for c in browser.configs if c["phase"] == "recover")
+                assert all(
+                    c["code"] == "" and not c.get("code_b64")
+                    for c in browser.configs
+                    if c["phase"] == "recover"
+                )
             assert len(await adapter.state.pending(host.context)) == 1
 
     asyncio.run(scenario())

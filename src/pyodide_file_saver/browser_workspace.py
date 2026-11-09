@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from uuid import uuid4
 
 from pydantic import Field, JsonValue
@@ -10,6 +11,7 @@ from .browser_execution import import_hints
 from .contracts import (
     JSON_VALUE,
     BrowserFailure,
+    FailureCause,
     Limits,
     ManifestEntry,
     SaverError,
@@ -34,8 +36,11 @@ class WorkspaceReply(StrictModel):
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     execution_completed: bool = False
+    cause: FailureCause | None = None
     manifest: list[ManifestEntry] = Field(default_factory=list)
     files: list[TransferFile] = Field(default_factory=list)
+    binary: bool = False
+    uploaded_file_id: str | None = None
 
 
 WORKSPACE_BROWSER = r"""
@@ -45,6 +50,14 @@ async def __FUNCTION__():
     cfg = jsn.loads(__CONFIG__)
     import os, stat, base64, hashlib, io, contextlib, traceback, ast, inspect, sys
     from uuid import uuid4
+    import asyncio
+    if cfg.get("code_b64"):
+        cfg["code"] = base64.b64decode(cfg.pop("code_b64"), validate=True).decode("utf-8")
+    class WorkspaceInvariantError(ValueError):
+        def __init__(self, code, http_status=0):
+            self.code = code
+            self.http_status = http_status
+            super().__init__(code)
     runtime_id = getattr(bi, "_pyodide_file_saver_runtime_id", None)
     if runtime_id is None:
         runtime_id = str(uuid4())
@@ -59,7 +72,7 @@ async def __FUNCTION__():
         body.update(values)
         text = jsn.dumps(body, ensure_ascii=True, separators=(",", ":"))
         if len(text.encode()) + 1024 > cfg["limits"]["max_envelope_bytes"]:
-            raise ValueError("Retained delta exceeds callback limit")
+            raise WorkspaceInvariantError("callback_limit")
         return text
     if cfg["phase"] == "probe":
         return response()
@@ -71,23 +84,71 @@ async def __FUNCTION__():
     shell_ready = shell_ready and (getattr(bi, "_pyodide_file_saver_shell_digest", None)
         == cfg.get("shell_digest"))
     if cfg["phase"] == "prepare":
-        return response(warm=warm, shell_ready=shell_ready)
+        return response(warm=warm, shell_ready=shell_ready,
+            binary=cfg.get("binary_transport", False))
     if getattr(bi, "_pyodide_file_saver_busy", None) is not None:
         return response(outcome="busy", stderr="Another managed execution is still running")
     bi._pyodide_file_saver_busy = cfg["operation_id"]
     old_cwd, old_import = os.getcwd(), bi.__import__
     evidence = {}
     try:
+        if cfg["phase"] == "packages":
+            # Source metadata is encoded so native frontend regex preloading
+            # cannot bypass this phase's blocked-import filter. File bytes use HTTP.
+            try:
+                source = base64.b64decode(cfg["package_source"], validate=True).decode("utf-8")
+                try:
+                    tree = ast.parse(source)
+                except SyntaxError:
+                    # The normal program path retains its SyntaxError/streams.
+                    return response()
+                names = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        names.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                        names.add(node.module.split(".")[0])
+                names.difference_update(cfg["blocked_modules"])
+                if not names:
+                    return response()
+                import pyodide_js
+                from pyodide.ffi import create_proxy
+                from js import Object
+                failed = False
+                def load_error(_message):
+                    nonlocal failed
+                    failed = True
+                def load_progress(_message):
+                    pass
+                callbacks = []
+                try:
+                    callbacks.append(create_proxy(load_progress))
+                    callbacks.append(create_proxy(load_error))
+                    options = Object.new()
+                    options.messageCallback, options.errorCallback = callbacks
+                    options.checkIntegrity = True
+                    # The vendor lock resolves imports (including PIL) to distributions.
+                    # Some failures resolve normally and only invoke errorCallback.
+                    # Do not time out this await and clear busy: the JS installer
+                    # has no public abort API and may still be changing the runtime.
+                    await pyodide_js.loadPackagesFromImports(
+                        "\n".join("import " + name for name in sorted(names)), options)
+                finally:
+                    for callback in callbacks:
+                        callback.destroy()
+                return response(outcome="dependency_error" if failed else "ok")
+            except Exception:
+                return response(outcome="dependency_error")
         continuation = cfg.get("continuation", False)
-        snapshot_only = cfg["phase"] in {"snapshot", "recover"}
+        snapshot_only = cfg["phase"] in {"snapshot", "recover", "upload"}
         if snapshot_only:
             if not state or state["head"] != cfg["operation_id"]:
                 return response(outcome="recovery_unavailable")
             continuation = True
         if continuation and not (state and state["head"] == cfg["operation_id"]):
-            raise ValueError("Browser restore sequence changed")
+            raise WorkspaceInvariantError("restore_changed")
         if not continuation and cfg["warm"] and not warm:
-            raise ValueError("Browser workspace changed after preparation")
+            raise WorkspaceInvariantError("workspace_changed")
         if not continuation and not cfg["warm"]:
             # A conflicting/unacknowledged old root remains intact for diagnosis.
             root = "/tmp/pyodide-workspace-" + cfg["operation_id"]
@@ -102,10 +163,10 @@ async def __FUNCTION__():
         def target(relative):
             if (not relative or relative.startswith("/") or "\\" in relative
                     or any(p in ("", ".", "..") for p in relative.split("/"))):
-                raise ValueError("Invalid relative path")
+                raise WorkspaceInvariantError("invalid_path")
             full = root + "/" + relative
             if os.path.commonpath([root, os.path.realpath(full)]) != root:
-                raise ValueError("Path escaped managed root")
+                raise WorkspaceInvariantError("path_escape")
             return full
         def regular(relative):
             full = target(relative)
@@ -114,19 +175,19 @@ async def __FUNCTION__():
             for name in relative.split("/"):
                 parent += "/" + name
                 if os.path.islink(parent):
-                    raise ValueError("Links cannot enter retained snapshots")
+                    raise WorkspaceInvariantError("retained_link")
             return full
         for name in ("work", "scripts", "outputs", "inputs"):
             full = regular(name)
             os.makedirs(full, exist_ok=True)
             if not stat.S_ISDIR(os.lstat(full).st_mode):
-                raise ValueError("Managed directory replaced")
+                raise WorkspaceInvariantError("managed_directory")
         for name in ("inputs", "scripts", "outputs"):
             alias = root + "/work/" + name
             expected = "../" + name
             if os.path.lexists(alias):
                 if not os.path.islink(alias) or os.readlink(alias) != expected:
-                    raise ValueError("Managed convenience alias replaced")
+                    raise WorkspaceInvariantError("managed_alias")
             else:
                 os.symlink(expected, alias)
         os.makedirs(root + "/work/tmp", exist_ok=True)
@@ -136,6 +197,62 @@ async def __FUNCTION__():
                 full = regular(relative)
                 if os.path.isfile(full):
                     os.unlink(full)
+        async def http(url, options, json_reply=False, expected_size=None):
+            from js import fetch, AbortController, Object
+            from pyodide.ffi import to_js
+            controller = AbortController.new()
+            options = to_js(options, dict_converter=Object.fromEntries)
+            options.signal = controller.signal
+            try:
+                async with asyncio.timeout(min(45, cfg["limits"]["callback_timeout_seconds"],
+                        cfg.get("http_timeout_seconds", 45))):
+                    reply = await fetch(url, options)
+                    if not reply.ok:
+                        raise WorkspaceInvariantError("transfer_http", int(reply.status))
+                    # Read the body under the same deadline and reject oversized
+                    # responses before allocating an unbounded ArrayBuffer.
+                    if json_reply:
+                        return await reply.json()
+                    from js import Uint8Array
+                    reader = reply.body.getReader()
+                    buffer = Uint8Array.new(expected_size)
+                    offset = 0
+                    try:
+                        while True:
+                            chunk = await reader.read()
+                            if chunk.done:
+                                break
+                            if offset + int(chunk.value.byteLength) > expected_size:
+                                raise WorkspaceInvariantError("transfer_changed")
+                            buffer.set(chunk.value, offset)
+                            offset += int(chunk.value.byteLength)
+                        if offset != expected_size:
+                            raise WorkspaceInvariantError("transfer_changed")
+                        return buffer
+                    finally:
+                        # Cancellation is cleanup; it must not replace the read/budget cause.
+                        try:
+                            await reader.cancel()
+                        except Exception:
+                            pass
+            except TimeoutError:
+                raise WorkspaceInvariantError("transfer_timeout") from None
+            except WorkspaceInvariantError:
+                raise
+            except Exception:
+                raise WorkspaceInvariantError("transfer_request_failed") from None
+            finally:
+                controller.abort()
+        for item in cfg.get("native_restore", []):
+            full = regular(item["path"])
+            raw = (await http(item["url"], dict(credentials="same-origin"),
+                expected_size=item["size"])).to_py()
+            if len(raw) != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                raise WorkspaceInvariantError("transfer_changed")
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as stream:
+                stream.write(raw)
+            del raw
         for item in cfg["restore"]:
             full = regular(item["path"])
             os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -149,10 +266,10 @@ async def __FUNCTION__():
             with open(full, "rb") as stream:
                 actual = hashlib.file_digest(stream, "sha256").hexdigest()
             if actual != entry["sha256"] or os.path.getsize(full) != entry["size"]:
-                raise ValueError("Native input bytes changed")
+                raise WorkspaceInvariantError("input_changed")
         cwd = root if cfg["cwd"] == "." else target(cfg["cwd"])
         if not os.path.isdir(cwd):
-            raise ValueError("Requested cwd does not exist")
+            raise WorkspaceInvariantError("missing_cwd")
         async def execute():
             record_base = "scripts/.runs"
             while record_base in cfg["legacy_paths"]:
@@ -271,15 +388,34 @@ async def __FUNCTION__():
                 **evidence)
         # Aliases are checked again after arbitrary user code, but never traversed.
         if os.path.realpath(root) != root or not stat.S_ISDIR(os.lstat(root).st_mode):
-            raise ValueError("Managed root replaced")
+            raise WorkspaceInvariantError("managed_root")
         for name in ("inputs", "scripts", "outputs"):
             alias = root + "/work/" + name
             if not os.path.islink(alias) or os.readlink(alias) != "../"+name:
-                raise ValueError("Managed convenience alias replaced")
+                raise WorkspaceInvariantError("managed_alias")
         for entry in cfg["inputs"]:
             with open(regular(entry["path"]), "rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
-                    raise ValueError("Read-only native input was modified; copy it to work/ first")
+                    raise WorkspaceInvariantError("input_changed")
+        if cfg["phase"] == "upload":
+            from js import Blob, FormData
+            from pyodide.ffi import to_js
+            item = cfg["native_transfer"]
+            with open(regular(item["path"]), "rb") as stream:
+                raw = stream.read(cfg["limits"]["max_file_bytes"] + 1)
+            if len(raw) != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                raise WorkspaceInvariantError("transfer_changed")
+            form = FormData.new()
+            blob = Blob.new(to_js([memoryview(raw)]))
+            form.append("file", blob, item["path"].split("/")[-1])
+            form.append("metadata", jsn.dumps(dict(pyodide_file_saver=dict(
+                operation_id=cfg["operation_id"], transfer_key=item["transfer_key"]))))
+            result = await http(cfg["upload_url"], dict(method="POST", body=form,
+                credentials="same-origin"), json_reply=True)
+            file_id = str(result.id)
+            del raw, blob, form
+            return response(binary=True, uploaded_file_id=file_id,
+                outcome="ok" if evidence["exit_code"] == 0 else "execution_error", **evidence)
         paths = set(cfg["legacy_paths"])
         for base in ("scripts", "outputs"):
             for directory, dirs, names in os.walk(regular(base), followlinks=False):
@@ -287,7 +423,7 @@ async def __FUNCTION__():
                     relative = os.path.relpath(os.path.join(directory, name), root)
                     metadata = os.lstat(regular(relative))
                     if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
-                        raise ValueError("Only regular retained files are supported")
+                        raise WorkspaceInvariantError("retained_type")
                 paths.update(os.path.relpath(os.path.join(directory, name), root) for name in names)
         manifest, changed, total = [], [], 0
         baseline = {f["path"]: f["sha256"] for f in cfg["baseline"]}
@@ -296,47 +432,72 @@ async def __FUNCTION__():
             if not os.path.exists(full):
                 continue
             if not stat.S_ISREG(os.lstat(full).st_mode):
-                raise ValueError("Invalid retained regular file")
+                raise WorkspaceInvariantError("retained_type")
             size = os.path.getsize(full)
             total += size
-            if (size > cfg["limits"]["max_file_bytes"]
-                    or total > cfg["limits"]["max_total_bytes"]
-                    or len(manifest) >= cfg["limits"]["max_files"]):
-                raise ValueError("Retained file limits exceeded; scratch work/ is independent")
+            if size > cfg["limits"]["max_file_bytes"]:
+                raise WorkspaceInvariantError("retained_file_limit")
+            if total > cfg["limits"]["max_total_bytes"]:
+                raise WorkspaceInvariantError("retained_total_limit")
+            if len(manifest) >= cfg["limits"]["max_files"]:
+                raise WorkspaceInvariantError("retained_count_limit")
             with open(full, "rb") as stream:
                 sha = hashlib.file_digest(stream, "sha256").hexdigest()
             manifest.append(dict(path=relative, sha256=sha, size=size))
-            if baseline.get(relative) != sha:
+            if baseline.get(relative) != sha and not cfg.get("binary_transport"):
                 with open(full, "rb") as stream:
                     changed.append(dict(path=relative,
                         data=base64.b64encode(stream.read()).decode("ascii")))
         state["head"] = cfg["operation_id"]
         return response(outcome="ok" if evidence["exit_code"] == 0 else "execution_error",
-            **evidence, manifest=manifest, files=changed)
-    except Exception:
+            **evidence, manifest=manifest, files=changed, binary=cfg.get("binary_transport", False))
+    except Exception as error:
         pending_evidence = (state.get("execution", {}) if state
             and state.get("head") == cfg["operation_id"] else {})
+        # Never serialize exception messages, filenames, source or locals. Even
+        # class names are selected from built-in types, not arbitrary user classes.
+        kind = next((t.__name__ for t in (FileNotFoundError, PermissionError, ValueError,
+            OSError, RuntimeError, TypeError, MemoryError) if isinstance(error, t)), "Exception")
+        cause = dict(code=error.code if isinstance(error, WorkspaceInvariantError)
+            else "snapshot_exception", exception_type=kind, frame="", line=0,
+            http_status=error.http_status if isinstance(error, WorkspaceInvariantError) else 0)
+        tb = error.__traceback__
+        while tb:
+            if tb.tb_frame.f_code.co_name == "__FUNCTION__":
+                cause.update(frame="managed_workspace", line=min(tb.tb_lineno, 10000))
+            tb = tb.tb_next
         return response(outcome="snapshot_error",
-            **(evidence or pending_evidence))
+            cause=cause, **(evidence or pending_evidence))
     finally:
         bi.__import__ = old_import
         try:
             os.chdir(old_cwd if os.path.isdir(old_cwd) else "/")
         finally:
             bi._pyodide_file_saver_busy = None
-await __FUNCTION__()
+await globals().pop("__FUNCTION__")()
 """
 
 
 def workspace_wrapper(config: dict[str, JsonValue], code: str = "") -> tuple[str, str]:
     nonce = str(uuid4())
     config = {**config, "nonce": nonce}
+    source = config.get("code")
+    if isinstance(source, str) and source:
+        # Native frontends inspect callback source with regexes before dispatch.
+        # Encode command metadata so only policy-filtered hints can request loading.
+        config = {**config, "code": "", "code_b64": base64.b64encode(source.encode()).decode()}
     wrapper = WORKSPACE_BROWSER.replace("__FUNCTION__", "_pfs_" + nonce.replace("-", "")).replace(
         "__CONFIG__", repr(json_text(config))
     )
     # Reuse the existing supported-package hint extraction without executing it.
     if code and config.get("language") == "python":
-        wrapper = import_hints(code) + wrapper
+        blocked = config.get("blocked_modules", [])
+        blocked_names: set[str] = (
+            {name for name in blocked if isinstance(name, str)}
+            if isinstance(blocked, list)
+            else set()
+        )
+        wrapper = import_hints(code, blocked_names) + wrapper
     return wrapper, nonce
 
 
@@ -359,6 +520,17 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
         raise BrowserFailure(
             "Browser runtime changed before execution", "browser_runtime_changed", value.phase
         )
+    if value.outcome == "dependency_error":
+        if value.phase != "packages" or value.execution_completed:
+            raise SaverError(
+                "Invalid package preparation acknowledgement", "invalid_browser_response"
+            )
+        raise SaverError(
+            "The runtime could not load an imported package from its configured Pyodide catalog. "
+            "No user program started; check the dependency or ask an administrator "
+            "to verify package delivery.",
+            "dependency_unavailable",
+        )
     if value.outcome not in {"ok", "execution_error", "snapshot_error"}:
         raise BrowserFailure(
             "Browser workspace is busy"
@@ -366,7 +538,8 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
             else "Browser retained snapshot failed",
             "browser_busy" if value.outcome == "busy" else "browser_recovery_unavailable",
             value.phase
-            if value.phase in {"prepare", "restore", "execute", "snapshot", "recover"}
+            if value.phase
+            in {"prepare", "packages", "restore", "execute", "snapshot", "recover", "upload"}
             else "unknown",
         )
     return value

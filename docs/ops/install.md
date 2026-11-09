@@ -76,21 +76,36 @@ subject to host policy. They are not per-user `UserValves`.
 | Valve | Default |
 | --- | --- |
 | `max_files` | 64 retained regular files; a separate limit of 64 referenced inputs |
-| `max_file_bytes` | 8 MiB decoded bytes per file |
-| `max_total_bytes` | 8 MiB decoded retained files, excluding scratch and native inputs |
+| `max_file_bytes` | 20 MiB decoded bytes per file |
+| `max_total_bytes` | 64 MiB decoded retained files, excluding scratch and native inputs |
+| `max_input_bytes` | 64 MiB across inherited and newly selected native inputs |
+| `transfer_timeout_seconds` | 120 seconds per restore/save transfer stage |
 | `max_envelope_bytes` | 15 MiB serialized UTF-8 transfer/checkpoint |
 | `max_text_bytes` | 16 KiB per stdout/stderr stream, including its scratch log |
 | `callback_timeout_seconds` | 55 seconds |
 | `stop_on_browser_failure` | `false`; separately qualified cancellation of repeated failures |
 
-JSON/base64 overhead counts toward the serialized limit. Host upload/provider
-policies can lower effective limits. Decoded byte limits do not bypass them.
-These defaults stay below the host's 16 MiB callback ceiling and 60-second timeout;
-they are not a browser-memory or provider-capacity promise. Cold restoration sends
-files sequentially without chunking. Scratch uses browser memory separately.
+New nonempty file bytes use sequential binary Files HTTP requests in the existing
+worker, with same-origin cookie authentication. Callbacks contain bounded metadata,
+not base64 file payloads. Each HTTP operation is bounded by 45 seconds or the lower
+callback timeout and remaining stage budget; the complete restore/save stage also
+has its transfer deadline. Cancellation does not prove that an in-flight native
+server/provider upload stopped; later recovery reconciles its reserved transfer key.
+Host upload/provider policies can lower effective limits. The serialized callback
+limit stays below 16 MiB and its timeout below 60 seconds. Legacy version-one
+checkpoint restoration retains its original bounded encoding. Empty Files retain
+their local metadata representation.
+
+The 64 MiB budgets do not promise sufficient memory for document parsing or every
+device/provider. HTTP avoids base64 expansion but still copies bytes between the
+browser, WASM and configured storage. Qualify actual peak memory and interrupted
+transfer recovery on the target installation before increasing limits.
 
 Source updates do not replace explicitly saved Valve values. Review them when
-upgrading. Integer settings accept decimal integer strings from the native UI;
+upgrading. New code reads old receipts, but older strict-model releases cannot
+read native-transfer receipts or necessarily restore larger saved files. Do not
+roll back after such writes without a compatible recovery path. Integer settings
+accept decimal integer strings from the native UI;
 fractions, exponent notation, booleans and out-of-range values are rejected.
 The stopping setting requires an actual boolean. Unknown fields are rejected.
 Each field's description states its units.

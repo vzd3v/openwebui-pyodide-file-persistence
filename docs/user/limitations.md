@@ -29,7 +29,7 @@ Ask the assistant to use the existing operation ID and **no code**:
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
 | Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; automatic reconnect could not establish a usable original runtime |
-| All file blobs committed, manifest or publication interrupted | `retry` | Verifies saved bytes and current access, reconstructs a missing manifest and finishes publication without running the program |
+| Native upload response lost, all file blobs uploaded, or manifest/publication interrupted | `retry` | Discovers native uploads by their reserved keys, verifies bytes/access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |
 
@@ -47,7 +47,7 @@ outcome unknown. Results include a `recovery_plan` with the applicable next step
 Known-completed work without an acknowledged checkpoint blocks new programs with
 `execution_recovery_required`, preserving its pending root and completion evidence.
 Use recover before reloading/closing the tab. If retained bytes exceed the limits,
-recovery still needs an administrator-approved limit change within transport bounds,
+recovery still needs an administrator-approved decoded-byte limit change within native storage policy,
 or an explicitly chosen new-chat computation. The Tool has no pending-root edit,
 discard, historical inventory or export API.
 
@@ -68,10 +68,15 @@ be recovered this way; the original chat's uncertain operation stays recorded.
 ## Packages and saved programs
 
 Availability depends on the host's Pyodide catalog and administrator-permitted
-package sources. Static imports in submitted Python provide limited host loading
-hints. Imports hidden inside a saved script, dynamic imports and package probes do
-not automatically load its dependencies: put explicit imports or an approved
-installation step before running the saved script.
+package sources. Before execution, static imports in submitted Python request
+packages from the runtime's own catalog through its public loading API. A failed
+catalog download returns a dependency error before the program starts. This does
+not install arbitrary PyPI packages or make blocked imports available.
+Imports hidden inside a saved script, dynamic imports and package probes do not
+automatically load its dependencies: put explicit outer imports or an approved
+installation step before running the saved script. For example, `import numpy`
+before `exec(Path("scripts/analysis.py").read_text())` requests NumPy again in a
+fresh worker. Packages outside the catalog still need an approved explicit recipe.
 
 `ModuleNotFoundError` means an import is unavailable in the current worker. An
 asset 404 is a package-delivery problem for the administrator; an incompatible
