@@ -290,7 +290,9 @@ def test_binary_orchestration_recovers_lost_upload_without_source_replay(
             reply["binary"] = True
             reply["files"] = []
             if config["phase"] == "upload":
-                assert config["code"] == "" and config["restore"] == []
+                assert (
+                    config["code"] == "" and not config.get("code_b64") and config["restore"] == []
+                )
                 remaining = config["http_timeout_seconds"]
                 assert isinstance(remaining, (float, int)) and 0 < remaining <= 120
                 operation_id = config["operation_id"]

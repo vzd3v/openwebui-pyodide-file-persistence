@@ -505,7 +505,9 @@ def test_partial_blob_recovery_reuses_reserved_ids_and_rejects_changed_snapshot(
             final = await adapter.state.get(host.context, operation)
             assert [slot.file_id for slot in final.blobs] == immutable_ids
             recovery_calls = [item for item in browser.configs if item["phase"] == "recover"]
-            assert len(recovery_calls) == 2 and all(item["code"] == "" for item in recovery_calls)
+            assert len(recovery_calls) == 2 and all(
+                item["code"] == "" and not item.get("code_b64") for item in recovery_calls
+            )
             assert not [item for item in browser.configs[2:] if item["phase"] == "prepare"]
 
     asyncio.run(scenario())
