@@ -48,6 +48,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
           }).formData();
           const id = randomUUID();
           nativeFiles.set(id, {
+            filename: form.get("file").name,
             data: Buffer.from(await form.get("file").arrayBuffer()),
             metadata: JSON.parse(form.get("metadata")),
           });
@@ -562,7 +563,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       continuation: true,
       native_restore: [],
       defer_snapshot: true,
-      code: `from pathlib import Path\np=Path('scripts/count')\np.write_text(str(int(p.read_text())+1) if p.exists() else '1')\nPath('outputs/large.bin').write_bytes(Path('${nativeInput.path}').read_bytes())`,
+      code: `from pathlib import Path\np=Path('scripts/count')\np.write_text(str(int(p.read_text())+1) if p.exists() else '1')\nPath('outputs/a.'+'x'*220).write_bytes(Path('${nativeInput.path}').read_bytes())`,
     });
     assert.equal(binaryComplete.outcome, "ok", JSON.stringify(binaryComplete));
     const binarySnapshot = await run({ ...binaryConfig, phase: "snapshot", native_restore: [] });
@@ -570,7 +571,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     assert.equal(binarySnapshot.outcome, "ok", JSON.stringify(binarySnapshot));
     assert.deepEqual(binarySnapshot.files, []);
     assert(JSON.stringify(binarySnapshot).length < 20000);
-    const large = binarySnapshot.manifest.find((item) => item.path === "outputs/large.bin");
+    const large = binarySnapshot.manifest.find((item) => item.path.startsWith("outputs/a."));
     assert.equal(large.sha256, sha256);
     const transfer = { ...large, transfer_key: randomUUID() };
     const uploadConfig = {
@@ -578,6 +579,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       phase: "upload",
       native_restore: [],
       native_transfer: transfer,
+      upload_filename: "bounded-native-name.bin",
       upload_url: "/api/v1/files/?process=false",
     };
     const missingRoute = await run({ ...uploadConfig, upload_url: "/api/v1/files/missing" });
@@ -589,6 +591,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     assert(JSON.stringify(uploaded).length < 2048);
     assert.match(uploaded.uploaded_file_id, /^[0-9a-f-]{36}$/);
     const stored = nativeFiles.get(uploaded.uploaded_file_id);
+    assert.equal(stored.filename, uploadConfig.upload_filename);
     assert.equal(createHash("sha256").update(stored.data).digest("hex"), sha256);
     assert.deepEqual(stored.metadata.pyodide_file_saver, {
       operation_id: binaryConfig.operation_id,
@@ -617,7 +620,7 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       phase: "execute",
       continuation: true,
       native_restore: [],
-      code: "from pathlib import Path\nprint(len(Path('outputs/large.bin').read_bytes()))",
+      code: `from pathlib import Path\nprint(len(Path('${large.path}').read_bytes()))`,
     });
     assert.equal(coldResult.outcome, "ok", JSON.stringify(coldResult));
     assert.equal(coldResult.stdout.trim(), String(inputBytes.length));

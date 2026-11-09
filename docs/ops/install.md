@@ -23,8 +23,9 @@ see [Contributing](../../CONTRIBUTING.md).
 
 ## Install and configure
 
-1. Back up the database and file storage normally. Keep browser persistence
-   enabled and existing browser files intact.
+1. Keep browser persistence enabled and existing browser files intact. For an
+   existing registration, follow the [upgrade guidance](#upgrade-an-existing-tool)
+   before changing it.
 2. Open [Releases](https://github.com/vzd3v/openwebui-pyodide-file-persistence/releases).
    Under **Assets** for the release you want, download `openwebui_pyodide_file_saver.py`.
    GitHub lists a SHA-256 digest with the asset for verifying your download.
@@ -110,11 +111,21 @@ fractions, exponent notation, booleans and out-of-range values are rejected.
 The stopping setting requires an actual boolean. Unknown fields are rejected.
 Each field's description states its units.
 
+## Upgrade an existing Tool
+
+Save a private preimage of the existing Tool registration/source, access grants
+and server Valves. Verify the new release asset, then update that registration
+in place. Preserve its ID, UserValves, Files and chats; source defaults do not
+replace saved Valve values. Review the [limits and rollback
+compatibility](#limits), then repeat the [installation checks](#check-your-installation)
+before making the update available to users.
+
 ## Native response stopping
 
-Durable request/session gates always prevent repeated dispatch and receipt growth
-after failure. They do not bound model-token consumption. Configure a finite
-native tool-iteration limit.
+Durable request/session gates prevent new dispatch and receipt allocation when
+an execution is fenced. Correctable argument, new-input and dependency refusals
+can permit a corrected call. Gates do not bound model-token consumption;
+configure a finite native tool-iteration limit.
 
 `stop_on_browser_failure=true` opts into the inspected Open WebUI 0.12.3 native
 cancellation path: persist an assistant error/receipt reference, emit completion

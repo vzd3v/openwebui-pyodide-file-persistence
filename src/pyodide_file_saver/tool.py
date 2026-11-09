@@ -46,6 +46,7 @@ from .workspace_transfer import reconcile_native_uploads
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
 EventEmitter = Callable[[dict[str, JsonValue]], Awaitable[object]]
 SAVER_LOG = logging.getLogger("pyodide_file_saver")
+PRESENTATION_TIMEOUT_SECONDS = 2.0
 
 
 def receipt_summary(receipt: Receipt) -> dict[str, JsonValue]:
@@ -313,6 +314,16 @@ class Tools:
         """Run Python or Bash in the user's browser with durable retained files.
 
         Each Python call has fresh globals: import names again or run a saved script.
+        Before creating large or many retained files, use status with no code to
+        inspect current limits and estimate output sizes. Do not create files above them.
+        If execution completed but saving failed, ANY new execute is forbidden,
+        including deleting, resizing or repacking its outputs. Follow recovery_plan
+        or explain the limit; do not try a cleanup program in the fenced workspace.
+        Native OS processes are unavailable: do not use os.system, subprocess or
+        python/ffmpeg executables. Run a saved script inside Python with exec after
+        importing its dependencies and Path when using pathlib. A failed network
+        request alone does not prove that networking is prohibited. Keep each path
+        component within 255 UTF-8 bytes.
         Explain failures and permitted next steps in the user's request language.
         Correct invalid calls/programs; never repeat an unchanged rejected call.
         Every call starts at the workspace root, shared by Python and Bash. Use
@@ -325,8 +336,7 @@ class Tools:
         filesystem paths, attachment cards or instructions to open Controls.
         Ordinary Python errors and nonzero Bash exits save retained files privately.
         Bash provides jq, rg, find, head, tail, sed, awk and ordinary file commands;
-        use Python for Pyodide packages. Every call has a fresh Python namespace
-        or shell environment; import names again or run a saved script. Warm workers
+        use Python for Pyodide packages. Each shell call has a fresh environment. Warm workers
         can retain installed packages, but a fresh browser does not reinstall them.
         Static Python imports provide host package-loading hints; dynamic import
         probes do not. Native subprocesses, threads and network shell commands are
@@ -355,7 +365,7 @@ class Tools:
         Do not silently exclude an input the user's task needs just to bypass a refusal.
 
         :param code: Python or shell source for execute; write issued documents in outputs/.
-        :param action: execute, retry, recover or status.
+        :param action: execute, retry, recover or status (includes current limits; no code).
         :param operation_id: Server-issued saved operation ID for retry or specific status.
         :param language: python or bash (browser just-bash; no native OS processes).
         :param input_file_ids: Current attachment IDs for execute; [] selects no new inputs.
@@ -392,6 +402,10 @@ class Tools:
                     "effective_upload_max_file_bytes": effective_upload_limit,
                     "upload_policy_status": upload_policy_status,
                     "other_native_constraints": "not_preflighted",
+                    "file_transfer": (
+                        "New files use binary Files HTTP; max_envelope_bytes bounds "
+                        "metadata and legacy checkpoints, not new file size"
+                    ),
                 }
             event: dict[str, JsonValue] = {
                 **correlation,
@@ -579,15 +593,16 @@ class Tools:
             result.update(await operation_summary(adapter, context, receipt))
             if receipt.state == "published" and __event_emitter__:
                 try:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": "Workspace saved; issued files are ready",
-                                "done": True,
-                            },
-                        }
-                    )
+                    async with asyncio.timeout(PRESENTATION_TIMEOUT_SECONDS):
+                        await __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": "Workspace saved; issued files are ready",
+                                    "done": True,
+                                },
+                            }
+                        )
                 except Exception as error:
                     # Presentation is not persistence and cannot revoke a verified save.
                     SAVER_LOG.warning(

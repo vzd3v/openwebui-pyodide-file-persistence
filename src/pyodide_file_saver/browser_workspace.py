@@ -407,7 +407,7 @@ async def __FUNCTION__():
                 raise WorkspaceInvariantError("transfer_changed")
             form = FormData.new()
             blob = Blob.new(to_js([memoryview(raw)]))
-            form.append("file", blob, item["path"].split("/")[-1])
+            form.append("file", blob, cfg["upload_filename"])
             form.append("metadata", jsn.dumps(dict(pyodide_file_saver=dict(
                 operation_id=cfg["operation_id"], transfer_key=item["transfer_key"]))))
             result = await http(cfg["upload_url"], dict(method="POST", body=form,

@@ -78,8 +78,10 @@ content through other tools, attachment processing or printed output.
 
 ## When something fails
 
-Use the existing operation ID with `status`, `retry` or `recover` as appropriate;
-do not automatically rerun code. Read the
+Ask the assistant to explain the cause and permitted next action. Invalid
+arguments, a newly selected input or supported imports can be corrected; an
+uncertain execution must not be rerun. Use the existing operation ID with
+`status`, `retry` or `recover` to inspect or save existing work. Read the
 [recovery matrix and browser limitations](limitations.md#if-execution-or-saving-fails)
 before reloading the tab or starting another program.
 
@@ -89,6 +91,7 @@ Shell commands are browser implementations. Common file commands, `rg`, `jq`,
 `sed`, `awk` and pipelines are available; not every GNU option or jq expression
 is supported. Native programs, subprocesses, OS threads, network shell commands
 and compression commands are unavailable. Use Python for Pyodide packages.
+Shell paths belong to the workspace; OS device files such as `/dev/null` are unavailable.
 
 Browser memory limits scratch. Empty saved files require local storage; other
 storage providers reject their creation. There is no automatic pruning of saved

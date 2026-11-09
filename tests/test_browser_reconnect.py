@@ -34,6 +34,38 @@ async def generation(host: HostHarness, task: str) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("change", ["access", "generation"])
+def test_fallback_rechecks_live_admission_before_source_dispatch(
+    database_case: DatabaseCase,
+    host_factory: Callable[[AsyncEngine, str | None], HostHarness],
+    change: str,
+) -> None:
+    async def scenario() -> None:
+        async with open_host(database_case, host_factory) as host:
+            task = str(uuid4())
+            await generation(host, task)
+
+            class ChangedAdmission(BrowserReply):
+                async def __call__(self, payload: dict[str, JsonValue]) -> object:
+                    reply = await super().__call__(payload)
+                    if self.configs[-1]["phase"] == "packages":
+                        if change == "access":
+                            host.write_allowed = False
+                        else:
+                            await generation(host, str(uuid4()))
+                    return reply
+
+            browser = ChangedAdmission([])
+            # No injected session ID: the optional native reconnect pool is absent.
+            result = await host.call(browser, metadata={"task_id": task})
+            assert result["status"] == "error"
+            assert browser.calls == 0
+            assert all(config["phase"] != "execute" for config in browser.configs)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "interruption",
     [

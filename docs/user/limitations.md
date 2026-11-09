@@ -23,12 +23,17 @@ scratch cannot resume merely because its source was saved.
 
 ## If execution or saving fails
 
-Ask the assistant to use the existing operation ID and **no code**:
+Read the failure and its `recovery_plan` before choosing the next call. Use the
+existing operation ID and **no code** for status and saving completed work;
+correctable refusals can permit a corrected execution in the same request.
 
 | Evidence | Implemented action | Limit |
 | --- | --- | --- |
 | Lost response or uncertain outcome | `status` | Shows the acknowledged head, unresolved operations and recent history; specific status includes bounded received streams |
-| Failure before program dispatch | Explain the failure; reconnect before a new user request | The program did not start; automatic reconnect could not establish a usable original runtime |
+| Invalid arguments, newly selected inputs or supported dependencies | Correct the indicated arguments, input selection or imports | The program did not start; do not repeat the unchanged rejected call or silently omit required input |
+| Required inherited input or saved File is unavailable | Restore access, exact bytes or the applicable limits | Input selection cannot remove acknowledged inputs; reconnecting alone cannot repair deleted or changed Files |
+| Browser preparation cannot establish the original runtime before dispatch | Explain the connection failure; reconnect before a new user request | The program did not start; preserve the acknowledged head |
+| Program error with an acknowledged private checkpoint | Correct the program and execute the correction | Error-produced files stay private; if saving failed, finish recovery first |
 | Native upload response lost, all file blobs uploaded, or manifest/publication interrupted | `retry` | Discovers native uploads by their reserved keys, verifies bytes/access, reconstructs a missing manifest and finishes publication without running the program |
 | Completed work or partially uploaded files remain in the original live browser | `recover` | Snapshots the current pending operation, preserves reserved File IDs and finishes saving without running source again |
 | Worker is still busy, completion is unknown, or the pending browser root is gone | `status`; preserve the original tab if available | Recovery cannot retrieve bytes that never reached storage or a lost browser runtime |
@@ -74,9 +79,16 @@ catalog download returns a dependency error before the program starts. This does
 not install arbitrary PyPI packages or make blocked imports available.
 Imports hidden inside a saved script, dynamic imports and package probes do not
 automatically load its dependencies: put explicit outer imports or an approved
-installation step before running the saved script. For example, `import numpy`
-before `exec(Path("scripts/analysis.py").read_text())` requests NumPy again in a
-fresh worker. Packages outside the catalog still need an approved explicit recipe.
+installation step before running the saved script. For a NumPy script, submit:
+
+```python
+import numpy
+from pathlib import Path
+exec(Path("scripts/analysis.py").read_text())
+```
+
+This requests NumPy again in a fresh worker. Packages outside the catalog still
+need an approved explicit recipe.
 
 `ModuleNotFoundError` means an import is unavailable in the current worker. An
 asset 404 is a package-delivery problem for the administrator; an incompatible
@@ -92,6 +104,16 @@ and returned text. Scratch stdout/stderr logs have the same per-stream text cap.
 Other scratch still consumes browser memory; these limits do not
 promise enough RAM for a particular calculation. Large results need smaller
 retained outputs, not a blind retry or a larger callback timeout.
+
+Estimate large outputs before execution; ask for current limits through `status`.
+If completed work exceeds a save limit, a new cleanup or resizing program is also
+blocked. Follow the returned recovery plan or explain the limitation.
+
+Keep each filename or directory component within 255 UTF-8 bytes; short names
+(up to 180 bytes) are preferable. Some browser filesystems can create longer names
+but truncate them during directory enumeration, preventing a retained snapshot.
+Native upload names are bounded separately; shortening one does not rename the
+original workspace path or repair an already overlong browser filename.
 
 Only new or changed outputs from successful execution become chat attachments.
 Programs, state and run records stay private owner/admin-visible Files. Printing

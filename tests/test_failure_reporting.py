@@ -19,6 +19,7 @@ from pyodide_file_saver.contracts import (
     JSON_VALUE,
     BoundContext,
     BrowserFailure,
+    FailureCause,
     FileBytes,
     Limits,
     Receipt,
@@ -261,6 +262,7 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                 dispatch="completed_reported",
                 phase="snapshot",
                 failure_code="browser_snapshot_failed",
+                cause=FailureCause(code="retained_file_limit"),
             )
             next_task = str(uuid4())
             async with adapter.state.transaction() as session:
@@ -302,7 +304,20 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             with pytest.raises(WorkspaceInvocationStopped):
                 await replay()
             assert len(persisted) == 2 and browser.calls == 0
+            final_error = persisted[-1]["error"]
+            assert isinstance(final_error, dict)
+            assert final_error["type"] == "workspace_recovery_required"
+            assert "saving limit" in str(final_error["content"])
+            assert "cleanup or resizing" in str(final_error["content"])
+            assert "unavailable" not in str(final_error["content"])
             assert len(await adapter.state.pending(host.context)) == 1
+            saved_notice = await adapter.persist_stop(
+                host.context,
+                {"task_id": next_task},
+                {"receipt": {"execution_completed": True, "workspace_saved": True}},
+            )
+            assert "Existing results are saved" in str(saved_notice["content"])
+            assert "may still be running" not in str(saved_notice["content"])
 
     asyncio.run(scenario())
 

@@ -46,6 +46,8 @@ def correctable_refusal(code: str, origin: InputOrigin = "") -> bool:
 
 
 AGENT_GUIDANCE = (
+    "Reply in the language of the current user request, including successful results "
+    "and failure explanations; document content may use a different requested language. "
     "Use the execution, persistence and permitted-action facts independently. "
     "Correct an invalid call or program rather than repeating it unchanged. "
     "If the task cannot be completed, explain the cause and next step in the user's "
@@ -54,7 +56,10 @@ AGENT_GUIDANCE = (
 WORKSPACE_CAPABILITIES: dict[str, JsonValue] = {
     "globals_preserved": False,
     "native_processes": False,
-    "shell": "browser just-bash; selected file/text commands, not host executables",
+    "shell": (
+        "browser just-bash; workspace file/text commands, "
+        "no host executables or OS devices such as /dev/null"
+    ),
     "retained_state": "Use scripts/state/ for persistent data; import names in every Python call.",
 }
 FAILURE_FRAMES = frozenset(
