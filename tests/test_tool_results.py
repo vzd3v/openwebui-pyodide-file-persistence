@@ -147,12 +147,15 @@ def test_oversized_input_allows_corrected_execution_in_the_same_request(
                 "file_id": file_id,
                 "limit_bytes": 4,
                 "size_bytes": 6,
+                "input_origin": "new",
             }
             assert failed["execution_outcome"] == "not_started" and browser.calls == 0
             plan = failed["recovery_plan"]
             assert isinstance(plan, dict) and plan["next_step"] == "correct_inputs"
             assert "reconnect" not in str(plan).lower()
-            corrected = await host.call(browser, tool=tool)
+            corrected = await host.call(
+                browser, tool=tool, files=[{"id": file_id}], input_file_ids=[]
+            )
             assert corrected["status"] == "success" and browser.calls == 1
             assert corrected["error"] is None
 

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from .browser_workspace import workspace_reply, workspace_wrapper
 from .contracts import (
     JSON_VALUE,
+    NATIVE_FILE_ID_PATTERN,
     BoundContext,
     BrowserFailure,
     FileSlot,
@@ -956,24 +957,36 @@ class OpenWebUIAdapter:
         fresh: list[str] = []
         seen: set[str] = set()
 
-        def check_input_budget() -> None:
+        def check_input_budget(origin: str) -> None:
             total = sum(slot.size for slot in result)
             if total > limits.max_input_bytes:
                 raise SaverError(
                     "Native inputs exceed the configured aggregate byte limit",
                     "input_total_too_large",
-                    details={"limit_bytes": limits.max_input_bytes, "size_bytes": total},
+                    details={
+                        "limit_bytes": limits.max_input_bytes,
+                        "size_bytes": total,
+                        "input_origin": origin,
+                    },
                 )
 
-        check_input_budget()
+        check_input_budget("inherited")
         for slot in previous:
-            await self.authorize_file(context, slot.file_id)
+            try:
+                await self.authorize_file(context, slot.file_id)
+            except SaverError as error:
+                error.details.update(file_id=slot.file_id, input_origin="inherited")
+                raise
             seen.add(slot.file_id)
         if len(attachments) > limits.max_files:
             raise SaverError(
                 "Attached input count exceeds the configured limit",
                 "input_count_limit",
-                details={"count": len(attachments), "limit_count": limits.max_files},
+                details={
+                    "count": len(attachments),
+                    "limit_count": limits.max_files,
+                    "input_origin": "new",
+                },
             )
         for item in attachments:
             if item.get("type") not in {None, "file"}:
@@ -982,9 +995,13 @@ class OpenWebUIAdapter:
             if file_id in seen:
                 continue
             seen.add(file_id)
-            if len(file_id) > 128 or not all(char.isalnum() or char in "-_" for char in file_id):
+            if not NATIVE_FILE_ID_PATTERN.fullmatch(file_id):
                 raise SaverError("Unsupported attached File identifier")
-            name, provider_path = await self.authorize_file(context, file_id)
+            try:
+                name, provider_path = await self.authorize_file(context, file_id)
+            except SaverError as error:
+                error.details.update(file_id=file_id, input_origin="new")
+                raise
             # Skip this Tool's own issued attachments only after independent receipt proof.
             async with self.state.sessions() as session:
                 raw = await session.scalar(
@@ -1014,6 +1031,7 @@ class OpenWebUIAdapter:
                 try:
                     data = await self.read_file(context, file_id, limits.max_file_bytes)
                 except SaverError as error:
+                    error.details.update(file_id=file_id, input_origin="new")
                     if error.error_code == "file_too_large":
                         raise SaverError(
                             "Selected input exceeds the configured byte limit; "
@@ -1033,12 +1051,16 @@ class OpenWebUIAdapter:
                         representation="empty" if provider_path == "" else "provider",
                     )
                 )
-            check_input_budget()
+            check_input_budget("new")
         if len(result) > limits.max_files:
             raise SaverError(
                 "Referenced input count exceeds the configured limit",
                 "input_count_limit",
-                details={"count": len(result), "limit_count": limits.max_files},
+                details={
+                    "count": len(result),
+                    "limit_count": limits.max_files,
+                    "input_origin": "new" if len(result) > len(previous) else "inherited",
+                },
             )
         return result, fresh
 

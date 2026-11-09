@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import JsonValue
 
 from .contracts import OperationDiagnostics, Receipt
-from .tool_results import CORRECTABLE_REFUSALS
+from .tool_results import INPUT_ACCESS_REFUSALS, correctable_refusal
 from .workspace_manifest import retained_ready
 
 
@@ -40,6 +40,36 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             ),
         }
     if diagnostic.dispatch == "not_dispatched" and diagnostic.failure_code:
+        if diagnostic.failure_code == "dependency_unavailable":
+            return {
+                "execution": "not_started",
+                "next_step": "correct_dependencies",
+                "tool_actions": ["status", "execute"],
+                "needs_browser": True,
+                "instructions": "The program did not start. Use supported explicit imports or "
+                "approved package loading; ask an administrator to check catalog asset delivery "
+                "when needed. Then submit a corrected execute; do not repeat an unchanged failure.",
+            }
+        if (
+            diagnostic.failure_code in INPUT_ACCESS_REFUSALS
+            or diagnostic.input_origin == "inherited"
+        ):
+            correction = correctable_refusal(diagnostic.failure_code, diagnostic.input_origin)
+            return {
+                "execution": "not_started",
+                "next_step": "correct_inputs" if correction else "restore_required_input_access",
+                "tool_actions": ["status", "execute"] if correction else ["status"],
+                "needs_browser": False,
+                "instructions": (
+                    "The program did not start. A newly selected input is unavailable. Restore "
+                    "its access, or explicitly select a permitted attachment subset for a "
+                    "corrected execute. Explain any limitation before omitting a required file."
+                    if correction
+                    else "The program did not start. Restore availability/access of the required "
+                    "input or review the configured input limits. input_file_ids cannot remove "
+                    "acknowledged inputs. Preserve the saved head; reconnecting cannot repair this."
+                ),
+            }
         if diagnostic.failure_code == "browser_restore_failed":
             return {
                 "execution": "not_started",
@@ -51,7 +81,7 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
                 "bytes of the required saved/input Files before a new request. Preserve the "
                 "acknowledged head; reconnecting alone cannot repair deleted or changed files.",
             }
-        if diagnostic.failure_code in CORRECTABLE_REFUSALS:
+        if correctable_refusal(diagnostic.failure_code, diagnostic.input_origin):
             return {
                 "execution": "not_started",
                 "next_step": "correct_inputs",

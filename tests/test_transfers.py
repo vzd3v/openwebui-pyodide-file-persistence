@@ -105,6 +105,22 @@ def test_unicode_bytes_preload_hints_and_canonical_links() -> None:
     ast.parse(wrapper)  # Never execute browser Python on the backend.
     for package in ("docx", "pandas", "openpyxl"):
         assert f"# import {package}\n" in wrapper
+    encoded, _ = workspace_wrapper(
+        {
+            "operation_id": str(uuid4()),
+            "language": "python",
+            "code": code,
+            "blocked_modules": ["pandas", "openpyxl"],
+        },
+        code,
+    )
+    assert code not in encoded and "# import docx\n" in encoded
+    assert "import pandas" not in encoded and "import openpyxl" not in encoded
+    syntax, _ = workspace_wrapper(
+        {"operation_id": str(uuid4()), "language": "python", "code": "import docx\nif ("},
+        "import docx\nif (",
+    )
+    assert "import docx" not in syntax
     link = markdown_link("Отчёт [draft].xlsx", "synthetic-id")
     assert "\\[draft\\]" in link and link.endswith("/content?attachment=true)")
     assert "/content/content" not in link

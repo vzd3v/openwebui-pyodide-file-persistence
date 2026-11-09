@@ -39,6 +39,7 @@ from .contracts import (
     ExecutionBlocked,
     FailureCause,
     FileSlot,
+    InputOrigin,
     OperationDiagnostics,
     Receipt,
     SaverError,
@@ -555,6 +556,7 @@ class WorkspaceState:
         session_failed: bool = False,
         request_failed: bool = True,
         cause: FailureCause | None = None,
+        input_origin: InputOrigin = "",
     ) -> OperationDiagnostics:
         async with self.transaction() as session:
             # Match allocation's lock order so it cannot observe the failure
@@ -587,6 +589,7 @@ class WorkspaceState:
                 diagnostic.failure_code = failure_code
                 diagnostic.last_failure_at = now
                 diagnostic.cause = cause
+                diagnostic.input_origin = input_origin
             constructor = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
             active = int(
                 not receipt.execution_completed

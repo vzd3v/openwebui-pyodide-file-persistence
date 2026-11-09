@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from uuid import uuid4
 
 from pydantic import Field, JsonValue
@@ -50,6 +51,8 @@ async def __FUNCTION__():
     import os, stat, base64, hashlib, io, contextlib, traceback, ast, inspect, sys
     from uuid import uuid4
     import asyncio
+    if cfg.get("code_b64"):
+        cfg["code"] = base64.b64decode(cfg.pop("code_b64"), validate=True).decode("utf-8")
     class WorkspaceInvariantError(ValueError):
         def __init__(self, code, http_status=0):
             self.code = code
@@ -89,6 +92,53 @@ async def __FUNCTION__():
     old_cwd, old_import = os.getcwd(), bi.__import__
     evidence = {}
     try:
+        if cfg["phase"] == "packages":
+            # Source metadata is encoded so native frontend regex preloading
+            # cannot bypass this phase's blocked-import filter. File bytes use HTTP.
+            try:
+                source = base64.b64decode(cfg["package_source"], validate=True).decode("utf-8")
+                try:
+                    tree = ast.parse(source)
+                except SyntaxError:
+                    # The normal program path retains its SyntaxError/streams.
+                    return response()
+                names = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        names.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                        names.add(node.module.split(".")[0])
+                names.difference_update(cfg["blocked_modules"])
+                if not names:
+                    return response()
+                import pyodide_js
+                from pyodide.ffi import create_proxy
+                from js import Object
+                failed = False
+                def load_error(_message):
+                    nonlocal failed
+                    failed = True
+                def load_progress(_message):
+                    pass
+                callbacks = []
+                try:
+                    callbacks.append(create_proxy(load_progress))
+                    callbacks.append(create_proxy(load_error))
+                    options = Object.new()
+                    options.messageCallback, options.errorCallback = callbacks
+                    options.checkIntegrity = True
+                    # The vendor lock resolves imports (including PIL) to distributions.
+                    # Some failures resolve normally and only invoke errorCallback.
+                    # Do not time out this await and clear busy: the JS installer
+                    # has no public abort API and may still be changing the runtime.
+                    await pyodide_js.loadPackagesFromImports(
+                        "\n".join("import " + name for name in sorted(names)), options)
+                finally:
+                    for callback in callbacks:
+                        callback.destroy()
+                return response(outcome="dependency_error" if failed else "ok")
+            except Exception:
+                return response(outcome="dependency_error")
         continuation = cfg.get("continuation", False)
         snapshot_only = cfg["phase"] in {"snapshot", "recover", "upload"}
         if snapshot_only:
@@ -180,9 +230,17 @@ async def __FUNCTION__():
                             raise WorkspaceInvariantError("transfer_changed")
                         return buffer
                     finally:
-                        await reader.cancel()
+                        # Cancellation is cleanup; it must not replace the read/budget cause.
+                        try:
+                            await reader.cancel()
+                        except Exception:
+                            pass
             except TimeoutError:
                 raise WorkspaceInvariantError("transfer_timeout") from None
+            except WorkspaceInvariantError:
+                raise
+            except Exception:
+                raise WorkspaceInvariantError("transfer_request_failed") from None
             finally:
                 controller.abort()
         for item in cfg.get("native_restore", []):
@@ -416,19 +474,30 @@ async def __FUNCTION__():
             os.chdir(old_cwd if os.path.isdir(old_cwd) else "/")
         finally:
             bi._pyodide_file_saver_busy = None
-await __FUNCTION__()
+await globals().pop("__FUNCTION__")()
 """
 
 
 def workspace_wrapper(config: dict[str, JsonValue], code: str = "") -> tuple[str, str]:
     nonce = str(uuid4())
     config = {**config, "nonce": nonce}
+    source = config.get("code")
+    if isinstance(source, str) and source:
+        # Native frontends inspect callback source with regexes before dispatch.
+        # Encode command metadata so only policy-filtered hints can request loading.
+        config = {**config, "code": "", "code_b64": base64.b64encode(source.encode()).decode()}
     wrapper = WORKSPACE_BROWSER.replace("__FUNCTION__", "_pfs_" + nonce.replace("-", "")).replace(
         "__CONFIG__", repr(json_text(config))
     )
     # Reuse the existing supported-package hint extraction without executing it.
     if code and config.get("language") == "python":
-        wrapper = import_hints(code) + wrapper
+        blocked = config.get("blocked_modules", [])
+        blocked_names: set[str] = (
+            {name for name in blocked if isinstance(name, str)}
+            if isinstance(blocked, list)
+            else set()
+        )
+        wrapper = import_hints(code, blocked_names) + wrapper
     return wrapper, nonce
 
 
@@ -451,6 +520,17 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
         raise BrowserFailure(
             "Browser runtime changed before execution", "browser_runtime_changed", value.phase
         )
+    if value.outcome == "dependency_error":
+        if value.phase != "packages" or value.execution_completed:
+            raise SaverError(
+                "Invalid package preparation acknowledgement", "invalid_browser_response"
+            )
+        raise SaverError(
+            "The runtime could not load an imported package from its configured Pyodide catalog. "
+            "No user program started; check the dependency or ask an administrator "
+            "to verify package delivery.",
+            "dependency_unavailable",
+        )
     if value.outcome not in {"ok", "execution_error", "snapshot_error"}:
         raise BrowserFailure(
             "Browser workspace is busy"
@@ -458,7 +538,8 @@ def workspace_reply(raw: object, operation_id: str, nonce: str, limits: Limits) 
             else "Browser retained snapshot failed",
             "browser_busy" if value.outcome == "busy" else "browser_recovery_unavailable",
             value.phase
-            if value.phase in {"prepare", "restore", "execute", "snapshot", "recover", "upload"}
+            if value.phase
+            in {"prepare", "packages", "restore", "execute", "snapshot", "recover", "upload"}
             else "unknown",
         )
     return value

@@ -82,7 +82,10 @@ before dispatch, during execution and after acknowledged completion, and check
 that recovery releases only the applicable request gate.
 Socket-boundary fixtures also check pre-dispatch reconnection against runtime
 identity, actor/chat/session freshness, generation replacement and cancellation.
-They reject replay after restore/execute dispatch. These are synthetic host
+They reject replay after restore/execute dispatch. Package preparation cases cover
+resolved-Promise error callbacks, blocked imports, SyntaxError deferral and lost
+acknowledgement without source dispatch. Input selection cases cover same-request
+correction and reauthorization of inherited inputs. These are synthetic host
 boundaries; native reconnect qualification still needs a real served frontend.
 The matrix includes a stale session that remains present while its callback
 stalls, delayed cancellation, replacement reuse on the next call, mismatched

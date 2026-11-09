@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
@@ -108,7 +109,11 @@ async def verify_manifest(
         else:
             await adapter.authorize_file(context, slot.file_id, owned=True)
     for slot in manifest.inputs:
-        await adapter.authorize_file(context, slot.file_id)
+        try:
+            await adapter.authorize_file(context, slot.file_id)
+        except SaverError as error:
+            error.details.update(file_id=slot.file_id, input_origin="inherited")
+            raise
 
 
 async def execute_workspace(
@@ -214,6 +219,24 @@ async def execute_workspace(
     )
     assert isinstance(additions, dict)
     config.update(additions)
+    if not recovering and call.language == "python":
+        await connection.ensure_route()
+        await adapter.state.mark(context, receipt.operation_id, phase="packages")
+        # Encode only bounded source metadata, not file bytes. Raw imports inside
+        # JSON would trigger the host's regex preloader before our policy filter.
+        package_config = {
+            **config,
+            "phase": "packages",
+            "code": "",
+            "shell_asset": "",
+            "package_source": base64.b64encode(call.code.encode("utf-8")).decode("ascii"),
+        }
+        raw, nonce = await browser_call(event_call, package_config, limits, session_id, connection)
+        packages = workspace_reply(raw, receipt.operation_id, nonce, limits)
+        if packages.phase != "packages" or packages.runtime_id != prepared.runtime_id:
+            raise SaverError(
+                "Invalid package preparation acknowledgement", "invalid_browser_response"
+            )
 
     def ensure_restore_ack(restored: WorkspaceReply) -> None:
         if restored.phase != "restore":

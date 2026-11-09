@@ -68,10 +68,15 @@ be recovered this way; the original chat's uncertain operation stays recorded.
 ## Packages and saved programs
 
 Availability depends on the host's Pyodide catalog and administrator-permitted
-package sources. Static imports in submitted Python provide limited host loading
-hints. Imports hidden inside a saved script, dynamic imports and package probes do
-not automatically load its dependencies: put explicit imports or an approved
-installation step before running the saved script.
+package sources. Before execution, static imports in submitted Python request
+packages from the runtime's own catalog through its public loading API. A failed
+catalog download returns a dependency error before the program starts. This does
+not install arbitrary PyPI packages or make blocked imports available.
+Imports hidden inside a saved script, dynamic imports and package probes do not
+automatically load its dependencies: put explicit outer imports or an approved
+installation step before running the saved script. For example, `import numpy`
+before `exec(Path("scripts/analysis.py").read_text())` requests NumPy again in a
+fresh worker. Packages outside the catalog still need an approved explicit recipe.
 
 `ModuleNotFoundError` means an import is unavailable in the current worker. An
 asset 404 is a package-delivery problem for the administrator; an incompatible

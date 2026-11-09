@@ -55,6 +55,10 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
           response.end(JSON.stringify({ id }));
           return;
         }
+        if (url.searchParams.has("disconnect")) {
+          request.socket.destroy();
+          return;
+        }
         const id = url.pathname.split("/")[4];
         if (request.method === "GET" && nativeFiles.has(id)) {
           if (url.searchParams.has("delay"))
@@ -160,6 +164,15 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
         blocked_modules: [],
         ...extra,
       };
+      if (language === "python") {
+        const packages = await run({
+          ...config,
+          phase: "packages",
+          code: "",
+          package_source: Buffer.from(code).toString("base64"),
+        });
+        assert.equal(packages.outcome || "ok", "ok", JSON.stringify(packages));
+      }
       if (!prepared.warm) {
         for (const [path, data] of retained) {
           const restored = await run({
@@ -193,6 +206,33 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
       if (language === "bash") shellReady = true;
       return value;
     };
+    const packageConfig = {
+      operation_id: randomUUID(),
+      key: "packages",
+      head: "",
+      phase: "packages",
+      code: "",
+      blocked_modules: ["subprocess"],
+    };
+    // Local test assets deliberately omit catalog wheels. The public loader can
+    // resolve its Promise despite the 404; the wrapper must retain the failure.
+    const unavailablePackage = await run({
+      ...packageConfig,
+      package_source: Buffer.from("from PIL import Image").toString("base64"),
+    });
+    assert.equal(unavailablePackage.outcome, "dependency_error");
+    const blockedPackage = await run({
+      ...packageConfig,
+      package_source: Buffer.from("import subprocess").toString("base64"),
+    });
+    assert.equal(blockedPackage.outcome || "ok", "ok");
+    const invalidSyntax = await execute("import PIL\nif (");
+    assert.equal(invalidSyntax.outcome, "execution_error");
+    assert.match(invalidSyntax.stderr, /SyntaxError/);
+    assert.equal((await execute("ephemeral_name = 123")).outcome, "ok");
+    const freshGlobals = await execute("print(ephemeral_name)");
+    assert.equal(freshGlobals.outcome, "execution_error");
+    assert.match(freshGlobals.stderr, /NameError/);
     const first = await execute(
       'from pathlib import Path\nPath(\'scratch.bin\').write_bytes(bytes(256*1024*1024))\nPath(\'../scripts/data.json\').write_text(\'{"items":[{"name":"α","n":2},{"name":"β","n":3}]}\',encoding=\'utf-8\')\nprint(\'python ready\')',
     );
@@ -506,6 +546,14 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     });
     assert.equal(timedRestore.outcome, "snapshot_error", JSON.stringify(timedRestore));
     assert.equal(timedRestore.cause.code, "transfer_timeout");
+    const disconnectedRestore = await run({
+      ...binaryConfig,
+      operation_id: randomUUID(),
+      key: "binary-disconnected",
+      native_restore: [{ ...nativeInput, url: `/api/v1/files/${inputId}/content?disconnect=1` }],
+    });
+    assert.equal(disconnectedRestore.outcome, "snapshot_error");
+    assert.equal(disconnectedRestore.cause.code, "transfer_request_failed");
     const binaryRestored = await run(binaryConfig);
     assert.notEqual(binaryRestored.outcome, "snapshot_error", JSON.stringify(binaryRestored));
     const binaryComplete = await run({

@@ -31,8 +31,10 @@ from .contracts import (
 )
 from .openwebui_adapter import OpenWebUIAdapter, require_string
 from .tool_results import (
-    CORRECTABLE_REFUSALS,
+    correctable_refusal,
     exception_diagnostic,
+    refusal_origin,
+    select_input_attachments,
     tool_result,
     validate_invocation,
 )
@@ -121,6 +123,7 @@ async def operation_summary(
         "first_failure_cause": diagnostic.first_failure_cause.model_dump()
         if diagnostic.first_failure_cause
         else None,
+        "input_origin": diagnostic.input_origin or None,
         **(
             {"execution_outcome": "not_started"}
             if not receipt.execution_completed
@@ -297,6 +300,7 @@ class Tools:
         action: ActionName = "execute",
         operation_id: str = "",
         language: LanguageName = "python",
+        input_file_ids: list[str] | None = None,
         __user__: dict[str, JsonValue] | None = None,
         __chat_id__: str | None = None,
         __message_id__: str | None = None,
@@ -344,16 +348,25 @@ class Tools:
         even after reconnect or a new message. Lost browser bytes,
         scratch, variables and packages cannot be restored. Keep essential intermediate
         data in scripts/state/ and load permitted dependencies before running saved source.
+        Static imports load packages from this runtime's Pyodide catalog before execution.
+        Saved scripts require explicit outer imports or approved explicit package loading.
+        input_file_ids selects only current attachments: omit it to admit all, or [] to
+        admit none. Previously acknowledged inputs remain required and access-checked.
+        Do not silently exclude an input the user's task needs just to bypass a refusal.
 
         :param code: Python or shell source for execute; write issued documents in outputs/.
         :param action: execute, retry, recover or status.
         :param operation_id: Server-issued saved operation ID for retry or specific status.
         :param language: python or bash (browser just-bash; no native OS processes).
+        :param input_file_ids: Current attachment IDs for execute; [] selects no new inputs.
         """
         current_operation = ""
         adapter: OpenWebUIAdapter | None = None
         context: BoundContext | None = None
         stop_ready = False
+        limits: Limits | None = None
+        effective_upload_limit: int | None = None
+        upload_policy_status = "not_checked"
         invocation_id = str(uuid4())
         started_at = time.monotonic()
         stage = "validation"
@@ -373,6 +386,13 @@ class Tools:
 
         def finish(value: dict[str, JsonValue]) -> str:
             value["invocation_id"] = invocation_id
+            if limits is not None:
+                value["limits"] = {
+                    "configured": limits.model_dump(),
+                    "effective_upload_max_file_bytes": effective_upload_limit,
+                    "upload_policy_status": upload_policy_status,
+                    "other_native_constraints": "not_preflighted",
+                }
             event: dict[str, JsonValue] = {
                 **correlation,
                 "component": "execution",
@@ -410,6 +430,7 @@ class Tools:
                         "size_lower_bound_bytes",
                         "limit_count",
                         "count",
+                        "input_origin",
                     )
                     if key in details
                 }
@@ -422,7 +443,7 @@ class Tools:
             json_text({**correlation, "component": "execution", "event": "invocation_started"})
         )
         try:
-            call = validate_invocation(code, action, operation_id, language)
+            call = validate_invocation(code, action, operation_id, language, input_file_ids)
             stage = "configuration"
             # Cached Tool instances carry configuration, never actor/workspace state.
             limits = Limits.model_validate(
@@ -447,6 +468,14 @@ class Tools:
                 require_task=self.valves.stop_on_browser_failure
                 and call.action in {"execute", "recover"},
             )
+            try:
+                effective_upload_limit = await adapter.host_max_bytes(limits.max_file_bytes)
+                upload_policy_status = "checked"
+            except SaverError:
+                # Capability reporting must not make read-only status unavailable.
+                # Actual storage rechecks this policy and remains fail-closed.
+                upload_policy_status = "unavailable"
+            selected_attachments = select_input_attachments(__files__ or [], call.input_file_ids)
             if self.valves.stop_on_browser_failure and call.action in {"execute", "recover"}:
                 adapter.require_stop_capability()
                 if __event_emitter__ is None:
@@ -529,7 +558,7 @@ class Tools:
                     call,
                     receipt,
                     head,
-                    __files__ or [],
+                    selected_attachments,
                     limits,
                     __event_call__,
                     blocked_modules,
@@ -671,10 +700,12 @@ class Tools:
             }
             if isinstance(error, SaverError) and error.details:
                 result["error_details"] = error.details
-            if stage == "validation":
+            origin = refusal_origin(error.details) if isinstance(error, SaverError) else ""
+            correctable = correctable_refusal(error_code, origin)
+            if stage == "validation" or error_code == "invalid_input_selection":
                 result["recovery"] = "Correct the indicated arguments; status accepts no code."
                 result["permitted_actions"] = ["execute", "status", "retry", "recover"]
-            if error_code in CORRECTABLE_REFUSALS:
+            if correctable:
                 result["recovery"] = (
                     "Correct the selected inputs or reduce their size; "
                     "do not repeat the unchanged call."
@@ -711,8 +742,9 @@ class Tools:
                             else "host_operation_failed",
                             session_failed=isinstance(error, BrowserFailure)
                             and error.error_code in {"session_unavailable", "session_disconnected"},
-                            request_failed=error_code not in CORRECTABLE_REFUSALS,
+                            request_failed=not correctable,
                             cause=error.cause if isinstance(error, BrowserFailure) else None,
+                            input_origin=origin,
                         )
                     receipt = await adapter.state.get(context, current_operation)
                     summary = await operation_summary(adapter, context, receipt)

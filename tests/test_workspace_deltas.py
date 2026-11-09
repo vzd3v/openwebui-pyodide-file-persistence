@@ -166,15 +166,23 @@ def test_native_inputs_persist_without_copy_and_reauthorize_when_not_reattached(
                     .where(host.files.c.id == input_id)
                     .values(filename="renamed.txt")
                 )
-            second = await host.call(DeltaBrowser([], warm=True))
+            excluded = await host.add_input("actor-a", "excluded.txt", b"excluded")
+            second = await host.call(
+                DeltaBrowser([], warm=True), files=[{"id": excluded}], input_file_ids=[]
+            )
             assert second.get("state") == "published", second
             saved = await adapter.state.get(host.context, op(second))
             assert saved.inputs == receipt.inputs  # Stable acknowledged alias despite rename.
             async with host.engine.begin() as connection:
                 await connection.execute(delete(host.files).where(host.files.c.id == input_id))
             browser = DeltaBrowser([], warm=True)
-            failed = await host.call(browser)
+            failed = await host.call(browser, input_file_ids=[])
             assert failed["incomplete"] is True and browser.calls == 0
+            details = failed["error_details"]
+            assert isinstance(details, dict) and details["input_origin"] == "inherited"
+            plan = failed["recovery_plan"]
+            assert isinstance(plan, dict) and plan["next_step"] == "restore_required_input_access"
+            assert isinstance(plan["tool_actions"], list) and "execute" not in plan["tool_actions"]
 
     asyncio.run(scenario())
 

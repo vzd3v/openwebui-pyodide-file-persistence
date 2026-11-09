@@ -43,12 +43,19 @@ def validate_manifest(manifest: WorkspaceManifest, limits: Limits) -> None:
         raise SaverError("Retained manifest has conflicting paths")
     for slot in manifest.inputs:
         safe_relative_path(slot.path)
-        if (
-            not slot.path.startswith("inputs/")
-            or not slot.committed
-            or slot.size > limits.max_file_bytes
-        ):
+        if not slot.path.startswith("inputs/") or not slot.committed:
             raise SaverError("Invalid native input reference")
+        if slot.size > limits.max_file_bytes:
+            raise SaverError(
+                "Acknowledged input exceeds the configured byte limit; restore the input policy",
+                "input_too_large",
+                details={
+                    "file_id": slot.file_id,
+                    "input_origin": "inherited",
+                    "limit_bytes": limits.max_file_bytes,
+                    "size_bytes": slot.size,
+                },
+            )
 
 
 def manifest_bytes(receipt: Receipt) -> bytes:

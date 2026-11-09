@@ -18,11 +18,14 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model
 
 HOST_SOCKET_LIMIT = 16 * 1024 * 1024
 FILENAME_BYTES = 180
+MAX_MANAGED_FILES = 256
+NATIVE_FILE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 SCHEMA_VERSION = 1
 TOOL_RELEASE = "source"  # The standalone builder substitutes the project version.
 ActionName = Literal["execute", "retry", "status", "recover"]
 LanguageName = Literal["python", "bash"]
+InputOrigin = Literal["", "new", "inherited"]
 
 
 class FailureCause(BaseModel):
@@ -48,6 +51,7 @@ class FailureCause(BaseModel):
         "retained_count_limit",
         "transfer_http",
         "transfer_timeout",
+        "transfer_request_failed",
         "transfer_changed",
     ] = "snapshot_exception"
     exception_type: Literal[
@@ -113,6 +117,7 @@ class OperationDiagnostics(StrictModel):
     last_failure_at: float | None = None
     cause: FailureCause | None = None
     first_failure_cause: FailureCause | None = None
+    input_origin: InputOrigin = ""
 
 
 class ExecutionBlocked(SaverError):
@@ -134,7 +139,7 @@ class Limits(StrictModel):
     max_files: int = Field(
         default=64,
         ge=1,
-        le=256,
+        le=MAX_MANAGED_FILES,
         description=(
             "Maximum retained regular files in the managed workspace "
             "(scratch work/ is excluded); count, not bytes."
@@ -221,9 +226,17 @@ class Action(StrictModel):
     language: LanguageName = "python"
     cwd: str = "work"
     operation_id: str = ""
+    input_file_ids: list[str] | None = Field(default=None, max_length=MAX_MANAGED_FILES)
 
     @model_validator(mode="after")
     def validate_action(self) -> Action:
+        if self.input_file_ids is not None:
+            if self.action != "execute":
+                raise ValueError("input_file_ids is only valid for execute")
+            if len(set(self.input_file_ids)) != len(self.input_file_ids) or any(
+                not NATIVE_FILE_ID_PATTERN.fullmatch(value) for value in self.input_file_ids
+            ):
+                raise ValueError("input_file_ids requires distinct native File IDs")
         if self.action == "execute":
             if not self.code.strip() or self.operation_id:
                 raise ValueError("execute requires code and no operation_id")
