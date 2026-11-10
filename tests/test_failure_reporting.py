@@ -144,10 +144,32 @@ def test_callback_failure_codes_are_content_free_and_phase_bound(failure: str) -
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("version", "delivery_fault"),
+    [("0.12.3", "none")]
+    + [
+        ("0.13.3", fault)
+        for fault in (
+            "none",
+            "writer_none",
+            "writer_raise",
+            "writer_hang",
+            "writer_cancel",
+            "emitter_raise",
+            "emitter_hang",
+            "emitter_cancel",
+            "generation_stale",
+            "generation_unavailable",
+        )
+    ],
+)
 def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
     database_case: DatabaseCase,
     host_factory: Callable[[AsyncEngine, str | None], HostHarness],
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    delivery_fault: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def scenario() -> None:
         async with open_host(database_case, host_factory) as host:
@@ -158,6 +180,7 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             assert unavailable["incomplete"] is True and browser.calls == 0
             persisted: list[dict[str, JsonValue]] = []
             emitted: list[dict[str, JsonValue]] = []
+            recheck_pending = False
 
             async def upsert(
                 message: str,
@@ -166,18 +189,37 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                 patch: dict[str, JsonValue],
                 db: AsyncSession | None = None,
             ) -> object:
+                nonlocal recheck_pending
                 assert chat == host.context.chat_id and message == host.context.message_id
                 assert actor == host.context.actor_id and db is not None
                 persisted.append(patch)
+                if delivery_fault == "generation_stale":
+                    recheck_pending = True
+                    return None
+                if delivery_fault == "writer_none":
+                    return None
+                if delivery_fault == "writer_raise":
+                    raise RuntimeError("private native writer detail")
+                if delivery_fault == "writer_hang":
+                    await asyncio.Future()
+                if delivery_fault == "writer_cancel":
+                    raise asyncio.CancelledError
                 await db.execute(
                     update(host.messages)
                     .where(host.messages.c.id == f"{chat}-{message}")
                     .values(error=patch["error"])
                 )
+                recheck_pending = delivery_fault == "generation_unavailable"
                 return object()
 
             async def emitter(event: dict[str, JsonValue]) -> object:
                 emitted.append(event)
+                if delivery_fault == "emitter_raise":
+                    raise RuntimeError("private native emitter detail")
+                if delivery_fault == "emitter_hang":
+                    await asyncio.Future()
+                if delivery_fault == "emitter_cancel":
+                    raise asyncio.CancelledError
 
             async def disconnected(payload: dict[str, JsonValue]) -> object:
                 return {"error": "Client session disconnected."}
@@ -188,7 +230,7 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                 SimpleNamespace(upsert_message=upsert),
                 raising=False,
             )
-            monkeypatch.setattr(sys.modules["open_webui.env"], "VERSION", "0.12.3")
+            monkeypatch.setattr(sys.modules["open_webui.env"], "VERSION", version)
             task_id = str(uuid4())
             adapter = OpenWebUIAdapter()
             async with adapter.state.transaction() as session:
@@ -215,6 +257,29 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                     __event_emitter__=emitter,
                 )
 
+            async def current_user(id: str, db: AsyncSession | None = None) -> object:
+                nonlocal recheck_pending
+                if recheck_pending:
+                    recheck_pending = False
+                    if delivery_fault == "generation_unavailable":
+                        raise RuntimeError("private generation lookup detail")
+                    # The external host lookup replaces the actual stored
+                    # generation after rollback, before fresh context reads.
+                    message["meta"] = {"task_id": str(uuid4())}
+                    async with host.engine.begin() as connection:
+                        await connection.execute(
+                            update(host.chats)
+                            .where(host.chats.c.id == host.context.chat_id)
+                            .values(chat=chat)
+                        )
+                return await host.user(id, db=db)
+
+            monkeypatch.setattr(
+                sys.modules["open_webui.models.users"],
+                "Users",
+                SimpleNamespace(get_user_by_id=current_user),
+            )
+
             # The first failure is actionable output, not whole-response cancellation.
             first_failure = JSON_VALUE.validate_json(await fail_browser())
             assert isinstance(first_failure, dict) and first_failure["incomplete"] is True
@@ -222,6 +287,41 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             assert isinstance(plan, dict) and plan["execution"] == "not_started"
             assert not persisted and not emitted
             # A repeated action in the failed request remains bounded.
+            if delivery_fault.startswith("generation_"):
+                with pytest.raises(WorkspaceInvocationStopped):
+                    await fail_browser()
+                assert not emitted and browser.calls == 0
+                assert '"phase":"generation"' in caplog.text
+                assert "private generation lookup detail" not in caplog.text
+                return
+            if delivery_fault in {"writer_none", "writer_raise", "writer_hang"}:
+                failure = JSON_VALUE.validate_json(await fail_browser())
+                assert isinstance(failure, dict) and failure["status"] == "error"
+                assert failure["incomplete"] is True and failure["agent_guidance"]
+                assert not emitted and browser.calls == 0
+                async with host.engine.connect() as connection:
+                    saved_error = await connection.scalar(
+                        select(host.messages.c.error).where(
+                            host.messages.c.id
+                            == f"{host.context.chat_id}-{host.context.message_id}"
+                        )
+                    )
+                    assert saved_error is None
+                before = len(await adapter.state.pending(host.context))
+                again = JSON_VALUE.validate_json(await fail_browser())
+                assert isinstance(again, dict) and again["status"] == "error"
+                assert len(await adapter.state.pending(host.context)) == before == 1
+                assert not emitted and browser.calls == 0
+                assert '"phase":"persist"' in caplog.text
+                assert '"error_type":' in caplog.text
+                assert "private native writer detail" not in caplog.text
+                return
+            if delivery_fault in {"writer_cancel", "emitter_cancel"}:
+                with pytest.raises(asyncio.CancelledError) as cancelled:
+                    await fail_browser()
+                assert type(cancelled.value) is asyncio.CancelledError
+                assert len(emitted) == (1 if delivery_fault == "emitter_cancel" else 0)
+                return
             with pytest.raises(WorkspaceInvocationStopped):
                 await fail_browser()
             assert len(persisted) == 1 and persisted[0]["error"]
@@ -245,7 +345,11 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
                 assert row["content"] == "newer normalized text"
                 assert row["output"] == [{"type": "message", "content": "preserved output"}]
                 assert row["files"] == []
-            assert [item["type"] for item in emitted] == ["status", "chat:completion"]
+            assert [item["type"] for item in emitted] == ["chat:completion"]
+            if delivery_fault.startswith("emitter_"):
+                assert '"phase":"emit"' in caplog.text
+                assert "private native emitter detail" not in caplog.text
+                return
             status = await host.call(action="status", tool=tool, metadata={"task_id": task_id})
             operations = status["operations"]
             assert isinstance(operations, list) and isinstance(operations[0], dict)
@@ -293,7 +397,7 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             assert isinstance(first, dict) and first["first_refusal"] is True
             assert first["error_code"] == "execution_recovery_required"
             assert first["stdout"] == "completed" and browser.calls == 0
-            assert len(persisted) == 1 and len(emitted) == 2
+            assert len(persisted) == 1 and len(emitted) == 1
             readable = await host.call(
                 action="status",
                 operation_id=operation_id,

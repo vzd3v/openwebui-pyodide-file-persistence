@@ -2,7 +2,8 @@
 
 Python runs in your active browser. Keep the original chat tab connected until
 execution and saving finish. Closing the browser does not move the computation
-to a server or create a background job. On a qualified Open WebUI 0.12.3 host,
+to a server or create a background job. On an Open WebUI host with an
+[inspected reconnect contract](../dev/compatibility.md#version-sensitive-integration),
 the Tool can reconnect before program dispatch if it recognizes the original
 interpreter in an authenticated session. A reloaded worker, an unrelated tab or
 missing continuity evidence cannot replace that interpreter automatically.
@@ -139,6 +140,14 @@ failed-session gates remain in force. Status and failed recovery never release i
 It cannot make the browser stop or guarantee that host output from other calls
 in the same batch was appended. Committed Files and receipts remain discoverable
 through status/retry even when that host output is missing.
+
+For a verifiable generation, native stopping requires a confirmed saved error.
+If saving fails while the
+generation remains verifiable, the ordinary failed Tool result reaches the
+assistant instead; its normal response loop can continue, but the execution gate
+still forbids replay. If the generation cannot be checked, the invocation stops
+without a new error event. Disconnected clients or unavailable host storage can
+prevent immediate display; no delivery acknowledgement guarantees visibility.
 
 The Tool checks the expected generation atomically before writing its native
 error. The host's later cancellation finalization has no equivalent generation

@@ -53,6 +53,10 @@ Choose a root separate from the original assets, with an existing parent directo
 The utility requires operator ownership and rejects symlinked output ancestors or
 directories writable by others. It follows only its validated `current` pointer.
 
+The utility validates its own publication layout; it does not import a mirror
+created by another utility. For an existing mirror with a different layout,
+prepare in a separate root and audit delivery before switching the ingress.
+
 ```sh
 python3 scripts/pyodide_packages.py prepare \
   --container open-webui \

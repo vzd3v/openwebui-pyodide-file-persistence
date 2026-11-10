@@ -95,6 +95,7 @@ class HostFileAccess(Protocol):
 
 
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
+INSPECTED_NATIVE_VERSIONS = frozenset({"0.12.3", "0.13.3"})
 
 
 class HostEventFactory(Protocol):
@@ -160,7 +161,7 @@ class NativeBrowserConnection:
         # Optional, version-sensitive recovery. Other hosts keep the injected RPC.
         if self.session_id and adapter.task_id(metadata):
             try:
-                if host_attribute("open_webui.env", "VERSION") != "0.12.3":
+                if host_attribute("open_webui.env", "VERSION") not in INSPECTED_NATIVE_VERSIONS:
                     return
                 pool = host_attribute("open_webui.socket.main", "SESSION_POOL")
                 batches = host_attribute("open_webui.socket.main", "get_session_pool_batches")
@@ -495,9 +496,10 @@ class OpenWebUIAdapter:
                 )
 
     def require_stop_capability(self) -> None:
-        if host_attribute("open_webui.env", "VERSION") != "0.12.3":
+        if host_attribute("open_webui.env", "VERSION") not in INSPECTED_NATIVE_VERSIONS:
             raise SaverError(
-                "Native cancellation is qualified only for Open WebUI 0.12.3; "
+                "Native cancellation requires an inspected Open WebUI version "
+                f"({', '.join(sorted(INSPECTED_NATIVE_VERSIONS))}); "
                 "disable stop_on_browser_failure until this host is qualified"
             )
         self.require_callable(
