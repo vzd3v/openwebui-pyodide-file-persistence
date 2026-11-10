@@ -130,7 +130,11 @@ before making the update available to users.
 Durable request/session gates prevent new dispatch and receipt allocation when
 an execution is fenced. Correctable argument, new-input and dependency refusals
 can permit a corrected call. Gates do not bound model-token consumption;
-configure a finite native tool-iteration limit.
+configure a finite native tool-iteration limit. Native iterations count model
+rounds, not individual Tool calls or a shared whole-response budget. Qualify the
+host's limit finalization and error presentation with your model/provider; a
+finite limit alone does not guarantee a readable saved error. This Tool does not
+limit other Tools or subagents.
 
 `stop_on_browser_failure=true` opts into the
 [inspected host contracts](../dev/compatibility.md#version-sensitive-integration):

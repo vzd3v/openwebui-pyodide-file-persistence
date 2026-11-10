@@ -20,7 +20,7 @@ host/provider before enabling the Tool for users.
 | Binary Files | Same-origin worker fetch with native cookie auth, canonical content GET and multipart upload with `process=false`; native metadata retained for upload reconciliation |
 
 Binary routes use the canonical same-origin `/api/v1/files/` API, matching the
-inspected Open WebUI 0.12.3 root-mounted frontend. Arbitrary subpath hosting is not
+inspected Open WebUI 0.12.3 and 0.13.3 root-mounted frontends. Arbitrary subpath hosting is not
 claimed. The existing worker must be able to send native authentication cookies.
 
 Publication updates an existing assistant message's `files`/`updated_at`, Chat JSON,
@@ -202,7 +202,8 @@ every host. Earlier qualification remains scoped to its recorded artifact.
 Candidate Tool SHA-256:
 `6916a3921d031010a8e15e80020fb342388f30c37e0b52e0570e1f8d3c54feea`.
 Focused native checks used Chromium, PostgreSQL, local storage and Open WebUI
-0.12.3 with local customizations. Open WebUI 0.13.3 native acceptance remains pending.
+0.12.3 with local customizations. See the separate
+[native Open WebUI 0.13.3 check](#native-open-webui-0133) for the same artifact.
 
 - Russian and English program failures produced readable failed cards after
   reload; the agent corrected the source and returned the requested language.
@@ -218,6 +219,37 @@ Focused native checks used Chromium, PostgreSQL, local storage and Open WebUI
 Writer/socket failure delivery was checked with real-database fixtures and
 synthetic host boundaries; this does not qualify visibility during a native host outage.
 
+## Native Open WebUI 0.13.3
+
+Candidate Tool SHA-256
+`6916a3921d031010a8e15e80020fb342388f30c37e0b52e0570e1f8d3c54feea`
+was checked in Chromium against the unmodified official Open WebUI 0.13.3 image,
+with PostgreSQL, local storage and native Pyodide file persistence enabled.
+Optional native response stopping was enabled.
+
+- Russian and English program errors remained readable in failed cards after
+  reload. The agent received each error, corrected the source and answered in
+  the requested language.
+- A 20 MiB output matched its downloaded hash and survived fresh-browser
+  restoration with an execution counter of one. Native CSV inputs, XLSX formulas,
+  DOCX structure and PNG dimensions passed content checks; DOCX generation used
+  the standard library, so this does not qualify the `python-docx` package.
+- A 21 MiB output completed execution but exceeded the 20 MiB per-file limit.
+  The agent explained that saving failed without replaying the program.
+- Native Stop, a 65-second browser disconnection and a lost HTTP upload response
+  preserved execution fences. Source-free recovery saved the original result;
+  upload reconciliation retained the original File ID.
+- Repeated failed recovery saved a readable native error. Owner and authorized
+  recipient downloads from a shared chat matched the 20 MiB output after reload;
+  foreign access was denied and private checkpoints/scripts remained private.
+
+These checks qualify the listed Tool workflows, not whole-response limits or
+every host/provider. A separate native two-round-limit check ended with raw
+model control text and no saved error on the tested model routes; finite native
+iterations alone did not establish reliable error presentation. The Tool does
+not supply a shared budget for other Tools or subagents. Remote storage,
+approval/resume, subagents and same-batch output preservation remain unqualified.
+
 ## Version-sensitive integration
 
 Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3 and 0.13.3
@@ -228,13 +260,13 @@ It does not resume unknown execution or recover a terminated/reloaded worker.
 Native qualification for this feature must be recorded separately from callback
 fixtures and the standalone Chromium wrapper test.
 
-The 0.13.3 integration is a source-inspected candidate; native acceptance is pending.
+Scoped 0.13.3 runtime acceptance is recorded [above](#native-open-webui-0133).
 Its [socket implementation](https://github.com/open-webui/open-webui/blob/v0.13.3/backend/open_webui/socket/main.py)
 retains authenticated session batches and does not automatically resend
 `execute:python` on disconnect. The
 [normalized message writer](https://github.com/open-webui/open-webui/blob/v0.13.3/backend/open_webui/models/chat_messages.py)
-retains its caller-owned transaction contract. These observations do not qualify
-frontend execution, recovery, permissions or cancellation on a served installation.
+retains its caller-owned transaction contract. Source inspection alone does not
+qualify frontend execution, recovery, permissions or cancellation on another installation.
 
 Reconnection stays within the configured callback timeout, probes at most eight
 sessions and waits at most five seconds per candidate. A timed-out candidate is
@@ -279,9 +311,9 @@ rolling back. Unknown legacy operations at the current revision remain fenced;
 older operations below an acknowledged head remain historical and cannot win CAS.
 
 Optional native response stopping is restricted to the inspected 0.12.3 and 0.13.3 contracts
-and disabled by default. Ordinary native cancellation/UI behavior was observed on
-a 0.12.3 installation; pristine stock, same-batch output preservation,
-approval/resume and subagent paths are not qualified. Requalify host upgrades.
+and disabled by default. Ordinary cancellation/UI behavior and repeated failure
+stopping were observed on 0.12.3 and stock 0.13.3 installations. Same-batch output
+preservation, approval/resume and subagent paths are not qualified. Requalify host upgrades.
 
 **0.2.0a3:** every call starts at the workspace root. The model-facing `cwd`
 argument is removed; saved files, paths and receipts require no migration.
