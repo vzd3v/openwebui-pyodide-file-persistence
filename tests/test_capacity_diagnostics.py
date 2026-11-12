@@ -268,3 +268,33 @@ def test_numeric_limit_survives_results_database_logs_and_native_fallback(
 
     asyncio.run(scenario())
     assert '"observed":65' in caplog.text and '"measurement":"lower_bound"' in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("error_code", "operation_id", "execution", "persistence", "recognized"),
+    [
+        ("execution_session_blocked", "", "not_started", "unchanged", True),
+        ("execution_request_blocked", "", "not_started", "unchanged", True),
+        ("execution_unresolved", "", "not_started", "unchanged", False),
+        ("execution_session_blocked", "bound", "not_started", "unchanged", False),
+        ("execution_session_blocked", "", "unknown", "unchanged", False),
+        ("execution_session_blocked", "", "not_started", "pending", False),
+    ],
+)
+def test_native_unbound_gate_copy_requires_known_current_facts_and_defers_to_receipt(
+    error_code: str, operation_id: str, execution: str, persistence: str, recognized: bool
+) -> None:
+    diagnostic: dict[str, JsonValue] = {
+        "error_code": error_code,
+        "operation_id": operation_id,
+        "execution_outcome": execution,
+        "persistence_outcome": persistence,
+    }
+    copy = native_failure_message({}, "en", diagnostic)
+    assert ("The current code did not run" in copy) == recognized
+    assert native_failure_message({"workspace_saved": True}, "en", diagnostic).startswith(
+        "Existing results are saved"
+    )
+    assert "program may still be running" in native_failure_message(
+        {"execution_outcome": "unknown"}, "en", diagnostic
+    )

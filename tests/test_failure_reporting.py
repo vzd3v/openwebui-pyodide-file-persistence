@@ -6,13 +6,13 @@ import asyncio
 import sys
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 from uuid import uuid4
 
 import pytest
 from conftest import BrowserReply, DatabaseCase, HostHarness, open_host
 from pydantic import JsonValue
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from pyodide_file_saver.contracts import (
@@ -686,5 +686,171 @@ def test_accepted_error_streams_survive_provider_failure_without_checkpoint_or_l
                 context=BoundContext("actor-b", "chat-b", "assistant-b"),
             )
             assert denied["incomplete"] is True and "synthetic traceback" not in str(denied)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("locale", ["en-US", "ru-RU"])
+@pytest.mark.parametrize("prior_dispatch", ["not_dispatched", "outcome_unknown"])
+def test_unbound_gate_preserves_current_refusal_and_cross_chat_privacy(
+    database_case: DatabaseCase,
+    host_factory: Callable[[AsyncEngine, str | None], HostHarness],
+    monkeypatch: pytest.MonkeyPatch,
+    locale: str,
+    prior_dispatch: Literal["not_dispatched", "outcome_unknown"],
+) -> None:
+    async def scenario() -> None:
+        async with open_host(database_case, host_factory) as host:
+            monkeypatch.setattr(sys.modules["open_webui.env"], "VERSION", "0.13.3")
+            adapter = OpenWebUIAdapter()
+            task_id = str(uuid4())
+            metadata: dict[str, JsonValue] = {
+                "task_id": task_id,
+                "session_id": "shared-browser",
+                "variables": {"{{USER_LANGUAGE}}": locale},
+            }
+            original = host.context
+            await adapter.state.initialize()
+            prior, _ = await adapter.state.allocate(
+                original,
+                diagnostics=adapter.invocation_diagnostics(original, metadata),
+            )
+            await adapter.state.mark(
+                original,
+                prior.operation_id,
+                phase="prepare",
+                dispatch=prior_dispatch,
+                failure_code="session_disconnected",
+                session_failed=True,
+            )
+            prior_diagnostic = await adapter.state.diagnostics(original, prior.operation_id)
+            current = BoundContext(original.actor_id, "chat-b", "assistant-b")
+            async with adapter.state.transaction() as session:
+                row = JSON_VALUE.validate_python(
+                    await session.scalar(
+                        select(host.chats.c.chat).where(host.chats.c.id == current.chat_id)
+                    )
+                )
+                assert isinstance(row, dict)
+                history = row["history"]
+                assert isinstance(history, dict) and isinstance(history["messages"], dict)
+                message = history["messages"][current.message_id]
+                assert isinstance(message, dict)
+                message.update(user_id=current.actor_id, meta={"task_id": task_id})
+                await session.execute(
+                    update(host.chats)
+                    .where(host.chats.c.id == current.chat_id)
+                    .values(user_id=current.actor_id, chat=row)
+                )
+                await session.execute(
+                    update(host.messages)
+                    .where(host.messages.c.chat_id == current.chat_id)
+                    .values(user_id=current.actor_id)
+                )
+
+            persisted: list[dict[str, JsonValue]] = []
+            emitted: list[dict[str, JsonValue]] = []
+
+            async def upsert(
+                message: str,
+                chat: str,
+                actor: str,
+                patch: dict[str, JsonValue],
+                db: AsyncSession | None = None,
+            ) -> object:
+                assert db is not None and (message, chat, actor) == (
+                    current.message_id,
+                    current.chat_id,
+                    current.actor_id,
+                )
+                persisted.append(patch)
+                await db.execute(
+                    update(host.messages)
+                    .where(host.messages.c.id == f"{chat}-{message}")
+                    .values(error=patch["error"])
+                )
+                return object()
+
+            async def emitter(event: dict[str, JsonValue]) -> object:
+                emitted.append(event)
+                return None
+
+            monkeypatch.setattr(
+                sys.modules["open_webui.models.chat_messages"],
+                "ChatMessages",
+                SimpleNamespace(upsert_message=upsert),
+                raising=False,
+            )
+            tool = Tools()
+            tool.valves.stop_on_browser_failure = True
+            browser = BrowserReply([])
+            first = await host.call(
+                browser,
+                tool=tool,
+                context=current,
+                metadata=metadata,
+                emitter=emitter,
+            )
+            assert first["error_code"] == "execution_session_blocked"
+            assert first["first_refusal"] is True
+            assert first["execution_outcome"] == "not_started"
+            assert first["persistence_outcome"] == "unchanged"
+            assert first["permitted_actions"] == ["status"]
+            assert "operation_id" not in first and "receipt" not in first
+            plan = first["recovery_plan"]
+            assert isinstance(plan, dict) and plan["tool_actions"] == ["status"]
+            assert first["message"] == first["recovery"] == plan["instructions"]
+            assert not persisted and not emitted
+            with pytest.raises(WorkspaceInvocationStopped):
+                await host.call(
+                    browser,
+                    tool=tool,
+                    context=current,
+                    metadata=metadata,
+                    emitter=emitter,
+                )
+            assert browser.configs == [] and browser.calls == 0
+            assert len(persisted) == len(emitted) == 1
+            native = persisted[0]["error"]
+            assert isinstance(native, dict) and native["content"] == first["message"]
+            diagnostic = native["diagnostic"]
+            assert isinstance(diagnostic, dict)
+            assert diagnostic["error_code"] == "execution_request_blocked"
+            assert diagnostic["operation_id"] == "" and diagnostic["receipt"] is None
+            assert diagnostic["execution_outcome"] == "not_started"
+            assert diagnostic["persistence_outcome"] == "unchanged"
+            for value in (first, native, emitted):
+                assert prior.operation_id not in json_text(value)
+                assert original.chat_id not in json_text(value)
+            if locale == "ru-RU":
+                assert "Текущий код не запускался, сохранённые файлы не изменились." in str(
+                    native["content"]
+                )
+                assert "обратитесь к администратору" in str(native["content"])
+            else:
+                assert "The current code did not run and saved files are unchanged." in str(
+                    native["content"]
+                )
+                assert "contact an administrator" in str(native["content"])
+            async with adapter.state.transaction() as session:
+                saved = await session.scalar(
+                    select(host.messages.c.error).where(
+                        host.messages.c.id == f"{current.chat_id}-{current.message_id}"
+                    )
+                )
+                assert saved == native
+                assert (
+                    await session.scalar(select(func.count()).select_from(adapter.state.operation))
+                    == 1
+                )
+                gates = (await session.execute(select(adapter.state.gate))).mappings().all()
+                assert len(gates) == 3  # Original request/session plus current refusal.
+                assert sum(gate["operation_id"] == prior.operation_id for gate in gates) == 2
+            assert await adapter.state.diagnostics(original, prior.operation_id) == prior_diagnostic
+            # Status cannot expose an operation from another chat or clear its gate.
+            status = await host.call(action="status", tool=tool, context=current, metadata=metadata)
+            assert status["operations"] == []
+            assert prior.operation_id not in json_text(status)
 
     asyncio.run(scenario())

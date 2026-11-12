@@ -47,6 +47,7 @@ from .workspace_recovery import (
     recovery_plan,
     retained_limit_message,
     ui_locale,
+    unbound_gate_message,
 )
 from .workspace_transfer import reconcile_native_uploads
 
@@ -805,6 +806,22 @@ class Tools:
                     result["permitted_actions"] = plan["tool_actions"]
                 except Exception:
                     result["receipt_unavailable"] = True
+            gate_message = None
+            if isinstance(error, ExecutionBlocked):
+                gate_message = unbound_gate_message(
+                    error_code, current_operation, ui_locale(__metadata__ or {})
+                )
+                if gate_message:
+                    detail = gate_message
+                    result["recovery"] = gate_message
+                    result["permitted_actions"] = ["status"]
+                    result["recovery_plan"] = {
+                        "execution": "not_started",
+                        "next_step": "inspect_original_gate",
+                        "tool_actions": ["status"],
+                        "needs_browser": False,
+                        "instructions": gate_message,
+                    }
             recorded = result.get("receipt")
             if (
                 isinstance(recorded, dict)
@@ -835,6 +852,11 @@ class Tools:
                     "error_code": error.error_code,
                     "receipt": result.get("receipt"),
                 }
+                if gate_message:
+                    diagnostic.update(
+                        execution_outcome=result["execution_outcome"],
+                        persistence_outcome=result["persistence_outcome"],
+                    )
                 native_error: dict[str, JsonValue] | None = None
                 try:
                     async with asyncio.timeout(PRESENTATION_TIMEOUT_SECONDS):

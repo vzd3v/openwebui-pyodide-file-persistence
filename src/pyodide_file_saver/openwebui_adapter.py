@@ -546,7 +546,7 @@ class OpenWebUIAdapter:
             and receipt.get("workspace_saved") is not True
         )
         content = native_failure_message(
-            receipt if isinstance(receipt, dict) else {}, ui_locale(metadata)
+            receipt if isinstance(receipt, dict) else {}, ui_locale(metadata), diagnostic
         )
         error: dict[str, JsonValue] = {
             "content": content,
