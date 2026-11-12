@@ -250,6 +250,35 @@ iterations alone did not establish reliable error presentation. The Tool does
 not supply a shared budget for other Tools or subagents. Remote storage,
 approval/resume, subagents and same-batch output preservation remain unqualified.
 
+## 0.3.0a4 native limit diagnostics
+
+Tool SHA-256:
+`0ae098ebef9195908d3e42c003aff8e0649a22abf271863fd396d1ef07b8b8db`.
+Focused Chromium checks used Open WebUI 0.13.3 with existing local customizations,
+PostgreSQL, local storage and the served Pyodide 314.0.3 runtime. They exercised
+ordinary assistant calls with one model/provider configuration, not every route
+or an unmodified upstream installation.
+
+- A completed program exceeded a 64-file retained limit. The first refusal
+  reported at least 65 files. The limit also counts private run records. After an
+  operator adjustment, source-free recovery saved the same operation: 68 retained
+  files, including two run records, with execution counter one.
+- A completed 2 MiB file exceeded a configured 1 MiB per-file limit. The failure
+  reported both exact byte counts. An operator adjustment and same-operation
+  recovery saved the original result with execution counter one.
+- Both cases used opposite interface and request languages. The failed card
+  used the interface language and stayed readable after reload; the assistant
+  explained the failure in the request language. Successful status reported the
+  acknowledged head's capacity, separately from pending state and free memory.
+- Sampled native UI and authenticated API downloads matched expected bytes and
+  hashes: two of 65 issued outputs in the count case and the sole 2 MiB output
+  in the per-file case.
+
+These checks qualify the listed failure/recovery paths. They do not promise error
+visibility during disconnection, lost browser bytes, arbitrary memory capacity,
+or compatibility with other storage providers. Earlier native checks remain
+scoped to their recorded artifacts.
+
 ## Version-sensitive integration
 
 Pre-dispatch reconnection is restricted to the inspected Open WebUI 0.12.3 and 0.13.3
