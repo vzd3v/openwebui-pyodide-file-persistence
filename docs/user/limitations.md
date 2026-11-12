@@ -135,7 +135,14 @@ uses a separately qualified native cancellation path. It is disabled by default.
 The first browser failure returns recovery guidance to the assistant, including
 when stopping is enabled. Repeated failed browser actions or blocked executes in
 that request can stop it. A first fenced execute in a new request also returns
-recovery instructions without allocating or dispatching; status/retry/recover remain allowed.
+recovery instructions without allocating or dispatching; status remains allowed, and
+retry/recover require an accessible operation ID and its plan.
+When a request or browser-session gate refuses execution without an accessible
+operation ID, the current program did not start and the saved workspace is
+unchanged. Status covers the current chat only. Inspect the earlier blocked work
+in its original chat; retry/recover require its real operation ID and recovery
+plan. Do not repeat execute or assume reconnecting makes an earlier rerun safe.
+
 An execute/execute/status batch can therefore stop before status is reached;
 arbitrary batch ordering is not guaranteed. Successful retry/recover of the blocked
 operation releases only that request's gate after checkpoint acknowledgement;

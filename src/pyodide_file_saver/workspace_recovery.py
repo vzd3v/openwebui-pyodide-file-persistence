@@ -72,8 +72,54 @@ def retained_limit_message(cause: FailureCause, locale: str = "en") -> str:
     )
 
 
-def native_failure_message(receipt: dict[str, JsonValue], locale: str) -> str:
+def unbound_gate_message(
+    error_code: JsonValue, operation_id: JsonValue, locale: str = "en"
+) -> str | None:
+    """Explain only a known pre-allocation gate, without revealing another chat's IDs."""
+    if operation_id != "" or error_code not in (
+        "execution_request_blocked",
+        "execution_session_blocked",
+    ):
+        return None
+    if locale == "ru":
+        return (
+            "Не удалось запустить код: выполнение заблокировано после предыдущего сбоя "
+            "в запросе или сессии. Текущий код не запускался, сохранённые файлы не изменились. "
+            "Проверьте сообщение об ошибке и план восстановления в исходном чате; "
+            "здесь данные предыдущей операции недоступны. "
+            "Если не удаётся найти исходный чат, обратитесь к администратору. "
+            "Не повторяйте выполнение в этом запросе: переподключение само по себе "
+            "не подтверждает, что прежнюю программу безопасно запустить заново."
+        )
+    return (
+        "Code could not start: execution is blocked after an earlier request or session failure. "
+        "The current code did not run and saved files are unchanged. Check the error and "
+        "recovery plan in the original chat; the earlier operation's details are unavailable "
+        "here. If you cannot find the original chat, contact an administrator. "
+        "Do not repeat execution in this request: reconnecting alone does not establish "
+        "that the earlier program is safe to run again."
+    )
+
+
+def native_failure_message(
+    receipt: dict[str, JsonValue],
+    locale: str,
+    diagnostic: dict[str, JsonValue] | None = None,
+) -> str:
     """Deterministic terminal copy; it requires no additional model continuation."""
+    if (
+        not receipt
+        and diagnostic
+        and (
+            diagnostic.get("execution_outcome") == "not_started"
+            and diagnostic.get("persistence_outcome") == "unchanged"
+        )
+    ):
+        message = unbound_gate_message(
+            diagnostic.get("error_code"), diagnostic.get("operation_id"), locale
+        )
+        if message:
+            return message
     completed_unsaved = (
         receipt.get("execution_completed") is True and receipt.get("workspace_saved") is not True
     )
