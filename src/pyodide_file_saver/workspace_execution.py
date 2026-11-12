@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
+import re
+import time
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
@@ -17,6 +20,7 @@ from .contracts import (
     Action,
     BoundContext,
     BrowserFailure,
+    FailureCause,
     FileBytes,
     FileSlot,
     Limits,
@@ -73,25 +77,79 @@ async def browser_call(
     if len(json_text(payload).encode()) > limits.max_envelope_bytes:
         raise SaverError("Serialized native request exceeds transport limit")
     phase = str(config.get("phase", "execute"))
+    started = time.monotonic()
+    outcome = "failed"
+
+    def timing() -> dict[str, int]:
+        return {
+            "elapsed_ms": min(3600000, round((time.monotonic() - started) * 1000)),
+            "configured_wait_ms": limits.callback_timeout_seconds * 1000,
+        }
+
     try:
         async with asyncio.timeout(limits.callback_timeout_seconds):
             raw = await connection.call(payload, phase) if connection else await event_call(payload)
+        OpenWebUIAdapter.classify_callback(raw, phase)
+        parsed = JSON_VALUE.validate_python(raw)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), str):
+            code = parsed.get("error_code") if isinstance(parsed, dict) else None
+            if not isinstance(code, str) or code not in {"runtime_error", "python_exception"}:
+                code = "missing_response"
+            raise BrowserFailure(
+                "Browser returned no workspace response", "browser_" + str(code), phase
+            )
+        outcome = "received"
+        return parsed, nonce
     except TimeoutError as error:
+        outcome = "timeout"
+        facts = timing()
         raise BrowserFailure(
             "Browser callback timed out; worker termination is not confirmed",
             "browser_callback_timeout",
             phase,
+            cause=FailureCause(
+                code="callback_timeout",
+                exception_type="TimeoutError",
+                elapsed_ms=facts["elapsed_ms"],
+                configured_wait_ms=facts["configured_wait_ms"],
+            ),
+            details={**facts},
         ) from error
-    OpenWebUIAdapter.classify_callback(raw, phase)
-    parsed = JSON_VALUE.validate_python(raw)
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("result"), str):
-        code = parsed.get("error_code") if isinstance(parsed, dict) else None
-        if not isinstance(code, str) or code not in {"runtime_error", "python_exception"}:
-            code = "missing_response"
-        raise BrowserFailure(
-            "Browser returned no workspace response", "browser_" + str(code), phase
-        )
-    return parsed, nonce
+    except BrowserFailure as error:
+        facts = timing()
+        error.details.update(facts)
+        if error.error_code == "browser_callback_timeout":
+            outcome = "timeout"
+            error.cause = FailureCause(
+                code="callback_timeout",
+                exception_type="TimeoutError",
+                elapsed_ms=facts["elapsed_ms"],
+                configured_wait_ms=facts["configured_wait_ms"],
+            )
+        raise
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    finally:
+        event: dict[str, JsonValue] = {
+            "component": "execution",
+            "event": "browser_phase_finished",
+            "phase": phase,
+            "operation": config.get("operation_id"),
+            "outcome": outcome,
+            **timing(),
+        }
+        if connection is not None:
+            for key, value in (
+                ("chat_id", connection.context.chat_id),
+                ("message_id", connection.context.message_id),
+                ("actor_id", connection.context.actor_id),
+                ("task_id", OpenWebUIAdapter.task_id(connection.metadata)),
+                ("invocation_id", connection.metadata.get("workspace_invocation_id")),
+            ):
+                if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+                    event[key] = value
+        logging.getLogger("pyodide_file_saver").info(json_text(event))
 
 
 async def verify_manifest(

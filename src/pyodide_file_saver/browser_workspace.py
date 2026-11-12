@@ -54,9 +54,10 @@ async def __FUNCTION__():
     if cfg.get("code_b64"):
         cfg["code"] = base64.b64decode(cfg.pop("code_b64"), validate=True).decode("utf-8")
     class WorkspaceInvariantError(ValueError):
-        def __init__(self, code, http_status=0):
+        def __init__(self, code, http_status=0, **facts):
             self.code = code
             self.http_status = http_status
+            self.facts = facts
             super().__init__(code)
     runtime_id = getattr(bi, "_pyodide_file_saver_runtime_id", None)
     if runtime_id is None:
@@ -436,11 +437,14 @@ async def __FUNCTION__():
             size = os.path.getsize(full)
             total += size
             if size > cfg["limits"]["max_file_bytes"]:
-                raise WorkspaceInvariantError("retained_file_limit")
+                raise WorkspaceInvariantError("retained_file_limit", observed=size,
+                    limit=cfg["limits"]["max_file_bytes"], measurement="exact")
             if total > cfg["limits"]["max_total_bytes"]:
-                raise WorkspaceInvariantError("retained_total_limit")
+                raise WorkspaceInvariantError("retained_total_limit", observed=total,
+                    limit=cfg["limits"]["max_total_bytes"], measurement="lower_bound")
             if len(manifest) >= cfg["limits"]["max_files"]:
-                raise WorkspaceInvariantError("retained_count_limit")
+                raise WorkspaceInvariantError("retained_count_limit", observed=len(manifest)+1,
+                    limit=cfg["limits"]["max_files"], measurement="lower_bound")
             with open(full, "rb") as stream:
                 sha = hashlib.file_digest(stream, "sha256").hexdigest()
             manifest.append(dict(path=relative, sha256=sha, size=size))
@@ -461,6 +465,9 @@ async def __FUNCTION__():
         cause = dict(code=error.code if isinstance(error, WorkspaceInvariantError)
             else "snapshot_exception", exception_type=kind, frame="", line=0,
             http_status=error.http_status if isinstance(error, WorkspaceInvariantError) else 0)
+        if isinstance(error, WorkspaceInvariantError):
+            cause.update({key: error.facts[key] for key in
+                ("observed", "limit", "measurement") if key in error.facts})
         tb = error.__traceback__
         while tb:
             if tb.tb_frame.f_code.co_name == "__FUNCTION__":

@@ -486,6 +486,10 @@ def test_aggregate_transfer_deadline_preserves_execution_facts(
             failed = await host.call(browser, tool=tool)
             assert failed["error_code"] == "transfer_timeout", failed
             assert failed["phase"] == ("restore" if phase == "restore" else "storage")
+            cause = failed["cause"]
+            assert isinstance(cause, dict) and cause["code"] == "transfer_timeout"
+            assert cause["configured_wait_ms"] == 1000
+            assert isinstance(cause["elapsed_ms"], int) and cause["elapsed_ms"] >= 900
             assert failed["execution_outcome"] == ("not_started" if phase == "restore" else "ok")
             assert bool([c for c in browser.configs if c["phase"] == "execute"]) == (
                 phase == "upload"

@@ -19,7 +19,7 @@ const payload = (config) =>
   );
 
 test("real browser worker shares files, transfers retained deltas and preserves warm scratch", {
-  timeout: 120000,
+  timeout: 180000,
 }, async () => {
   const worker = `import {loadPyodide} from '/pyodide/pyodide.mjs';
 const runtime = await loadPyodide({indexURL:'/pyodide/'});
@@ -425,6 +425,9 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     });
     assert.equal(oversized.outcome, "snapshot_error");
     assert.equal(oversized.cause.code, "retained_file_limit");
+    assert.equal(oversized.cause.observed, 32768);
+    assert.equal(oversized.cause.limit, 16384);
+    assert.equal(oversized.cause.measurement, "exact");
     assert.equal(oversized.execution_completed, true);
     assert.equal(oversized.exit_code, 0);
     assert.equal(oversized.stdout.trim(), "completed before snapshot");
@@ -446,6 +449,43 @@ self.postMessage({ready:true, absent:typeof globalThis.pyodide==='undefined'});`
     assert.deepEqual(await start(), { ready: true, absent: true });
     const lost = await run({ ...pending, phase: "recover" });
     assert.equal(lost.outcome, "recovery_unavailable");
+    for (const [policy, low, high, causeCode] of [
+      ["max_files", 3, 8, "retained_count_limit"],
+      ["max_total_bytes", 1000, 128 * 1024, "retained_total_limit"],
+    ]) {
+      assert.deepEqual(await start(), { ready: true, absent: true });
+      const limited = {
+        ...pending,
+        operation_id: randomUUID(),
+        key: policy,
+        limits: { ...pending.limits, max_file_bytes: 65536, [policy]: low },
+      };
+      const refused = await run(limited);
+      assert.equal(refused.outcome, "snapshot_error");
+      assert.equal(refused.execution_completed, true);
+      assert.equal(refused.cause.code, causeCode);
+      assert.equal(refused.cause.limit, low);
+      assert.equal(refused.cause.measurement, "lower_bound");
+      assert(refused.cause.observed > low);
+      const unchanged = await run({ ...limited, phase: "recover", code: "" });
+      assert.equal(unchanged.outcome, "snapshot_error");
+      const raised = await run({
+        ...limited,
+        phase: "recover",
+        code: "",
+        limits: { ...limited.limits, [policy]: high },
+      });
+      assert.equal(raised.outcome, "ok");
+      assert.equal(raised.stdout, refused.stdout);
+      assert.equal(
+        Buffer.from(
+          raised.files.find((file) => file.path === "scripts/count").data,
+          "base64",
+        ).toString(),
+        "1",
+      );
+    }
+    assert.deepEqual(await start(), { ready: true, absent: true });
     const metadataFailure = await run({
       ...pending,
       operation_id: randomUUID(),

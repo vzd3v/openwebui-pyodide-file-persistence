@@ -91,6 +91,12 @@ subject to host policy. They are not per-user `UserValves`.
 | `callback_timeout_seconds` | 55 seconds |
 | `stop_on_browser_failure` | `false`; separately qualified cancellation of repeated failures |
 
+The retained count includes private programs and automatic run records, not only
+downloadable outputs. Inputs have a separate count and byte budget. Scratch is
+excluded from saved-file totals but still uses browser memory. `status.capacity`
+reports acknowledged metadata against the current selected limits, not live free
+memory or pending browser files.
+
 New nonempty file bytes use sequential binary Files HTTP requests in the existing
 worker, with same-origin cookie authentication. Callbacks contain bounded metadata,
 not base64 file payloads. Each HTTP operation is bounded by 45 seconds or the lower
@@ -101,6 +107,12 @@ Host upload/provider policies can lower effective limits. The serialized callbac
 limit stays below 16 MiB and its timeout below 60 seconds. Legacy version-one
 checkpoint restoration retains its original bounded encoding. Empty Files retain
 their local metadata representation.
+
+Callback waiting, native program execution and restore/save transfer stages have
+separate deadlines. The [inspected native Worker](../dev/compatibility.md#version-sensitive-integration)
+has a 60-second execution timer; a host-wide response budget does not extend it.
+A callback timeout alone does not prove whether code started, completed or stopped.
+Use recorded dispatch/completion evidence and the recovery plan.
 
 The 64 MiB budgets do not promise sufficient memory for document parsing or every
 device/provider. HTTP avoids base64 expansion but still copies bytes between the

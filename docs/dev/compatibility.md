@@ -283,6 +283,17 @@ Source inspection is not runtime acceptance for every host.
 
 ## Saved-data compatibility
 
+Optional numeric diagnostics require a compatible reader before they are written.
+The reader-only source revision `8c23ed5f18987a84e45d9fcc0cf3e666ba47c751`
+accepts the new bounded cause fields and timeout category without producing them;
+its assembled Tool SHA-256 is
+`db7ff6c54af24a6355183fb3f0803cdb7bbf2a0606fee3e7f8b734fa7cebbe05`.
+Retain that exact artifact or a later compatible reader as the rollback target.
+Older strict readers, including unmodified 0.3.0a3, reject numeric causes; do not
+remove evidence or downgrade to them after new diagnostic writes. The reader-only
+artifact still needs limits compatible with already saved files. This changes no
+table schema or receipt version, and is not permission to discard state.
+
 **0.3.0a1:** reads earlier receipts/checkpoints and preserves existing native Files.
 New receipts include optional native-transfer reservations; diagnostics add
 structured failure facts. Earlier strict readers reject these new fields.

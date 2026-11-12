@@ -4,9 +4,118 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 
-from .contracts import OperationDiagnostics, Receipt
+from .contracts import FailureCause, OperationDiagnostics, Receipt
 from .tool_results import INPUT_ACCESS_REFUSALS, correctable_refusal
 from .workspace_manifest import retained_ready
+
+RETAINED_LIMIT_POLICIES = {
+    "retained_count_limit": "max_files",
+    "retained_file_limit": "max_file_bytes",
+    "retained_total_limit": "max_total_bytes",
+}
+
+
+def ui_locale(metadata: dict[str, JsonValue]) -> str:
+    """Use the native UI preference for static copy, never as an authority or query language."""
+    variables = metadata.get("variables")
+    value = variables.get("{{USER_LANGUAGE}}") if isinstance(variables, dict) else None
+    return "ru" if isinstance(value, str) and value.lower() in {"ru", "ru-ru"} else "en"
+
+
+def retained_limit_message(cause: FailureCause, locale: str = "en") -> str:
+    """One bounded explanation for the model result, recovery plan and native error card."""
+    policy = RETAINED_LIMIT_POLICIES[cause.code]
+    russian = locale == "ru"
+    subject = {
+        "retained_count_limit": ("Retained file count", "Количество сохраняемых файлов"),
+        "retained_file_limit": ("One retained file's size", "Размер одного сохраняемого файла"),
+        "retained_total_limit": ("Retained total size", "Общий размер сохраняемых файлов"),
+    }[cause.code][int(russian)]
+    if cause.observed is not None and cause.limit is not None:
+        bound = (
+            ("не менее " if russian else "at least ") if cause.measurement == "lower_bound" else ""
+        )
+        unit = "" if cause.code == "retained_count_limit" else (" байт" if russian else " bytes")
+        constraint = (
+            f"{subject}: {bound}{cause.observed}{unit}; лимит {cause.limit}{unit} ({policy}). "
+            if russian
+            else f"{subject}: {bound}{cause.observed}{unit}; limit {cause.limit}{unit} ({policy}). "
+        )
+    else:
+        constraint = (
+            f"{subject} превышает лимит ({policy}); точное значение не записано. "
+            if russian
+            else f"{subject} exceeds the limit ({policy}); numeric evidence was not recorded. "
+        )
+    if cause.code == "retained_count_limit":
+        constraint += (
+            "Служебные записи выполнения тоже учитываются. "
+            if russian
+            else "Private run records count too. "
+        )
+    if russian:
+        return (
+            "Программа завершилась, но файлы ещё не сохранены. "
+            + constraint
+            + f"С прежним лимитом recover снова откажет. Сохраните исходную вкладку. "
+            f"Попросите администратора проверить и при необходимости увеличить {policy}, "
+            "затем вызовите recover для той же операции без кода в исходном живом Worker. "
+            "Не запускайте программу повторно; не выполняйте очистку или изменение размеров файлов."
+        )
+    return (
+        "The program completed, but its files are not saved. "
+        + constraint
+        + f"Recovery with the unchanged limit will fail again. Keep the original tab. "
+        f"Ask an administrator to review and, if appropriate, raise {policy} sufficiently, "
+        "then recover the same operation without code in the original live worker. "
+        "Do not rerun the program or execute cleanup/resizing code."
+    )
+
+
+def native_failure_message(receipt: dict[str, JsonValue], locale: str) -> str:
+    """Deterministic terminal copy; it requires no additional model continuation."""
+    completed_unsaved = (
+        receipt.get("execution_completed") is True and receipt.get("workspace_saved") is not True
+    )
+    cause = receipt.get("cause")
+    if (
+        completed_unsaved
+        and isinstance(cause, dict)
+        and cause.get("code") in RETAINED_LIMIT_POLICIES
+    ):
+        return retained_limit_message(FailureCause.model_validate(cause), locale)
+    russian = locale == "ru"
+    if completed_unsaved:
+        return (
+            "Программа завершилась, но её файлы не сохранены. Новое выполнение, включая очистку "
+            "и изменение размеров, заблокировано. Проверьте status и план восстановления; "
+            "не запускайте программу повторно."
+            if russian
+            else "The program finished, but its files could not be saved. "
+            "New execution, including cleanup or resizing, is blocked. "
+            "Inspect status and the recovery plan; do not rerun the program."
+        )
+    if receipt.get("execution_outcome") == "not_started":
+        return (
+            "Программа не запускалась. Проверьте status операции и её план восстановления."
+            if russian
+            else "The program did not start. Inspect operation status and follow its recovery plan."
+        )
+    if receipt.get("workspace_saved") is True:
+        return (
+            "Результаты сохранены, но новое выполнение заблокировано в этом запросе или сессии "
+            "браузера. Проверьте status и план восстановления."
+            if russian
+            else "Existing results are saved, but further execution is blocked in this request "
+            "or browser session. Inspect status and follow its recovery plan."
+        )
+    return (
+        "Исход выполнения неизвестен; программа может ещё работать. Сохраните исходную вкладку, "
+        "проверьте status и не запускайте программу повторно."
+        if russian
+        else "The execution outcome is unresolved; the program may still be running. "
+        "Keep the original tab, inspect status and do not rerun the program."
+    )
 
 
 def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[str, JsonValue]:
@@ -20,6 +129,11 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
         }
     if receipt.execution_completed:
         committed = receipt.checkpoint_version == 2 and retained_ready(receipt)
+        limit_failure = (
+            diagnostic.cause
+            if diagnostic.cause and diagnostic.cause.code in RETAINED_LIMIT_POLICIES
+            else None
+        )
         return {
             "execution": "completed",
             "next_step": "finish_publication" if committed else "save_completed_files",
@@ -30,7 +144,9 @@ def recovery_plan(receipt: Receipt, diagnostic: OperationDiagnostics) -> dict[st
             ),
             "needs_browser": not committed,
             "instructions": (
-                "Use retry with this operation_id and no code; all reserved bytes were saved."
+                retained_limit_message(limit_failure)
+                if limit_failure and not committed
+                else "Use retry with this operation_id and no code; all reserved bytes were saved."
                 if committed
                 else "Use retry without code to reconcile native uploads first; if files remain "
                 "unsaved, use recover in the original live browser. Never rerun the program."

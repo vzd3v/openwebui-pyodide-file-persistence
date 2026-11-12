@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -121,9 +122,15 @@ class BrowserFailure(SaverError):
     """Classified callback failure without copying host or browser error text."""
 
     def __init__(
-        self, message: str, error_code: str, phase: str, *, cause: FailureCause | None = None
+        self,
+        message: str,
+        error_code: str,
+        phase: str,
+        *,
+        cause: FailureCause | None = None,
+        details: dict[str, JsonValue] | None = None,
     ):
-        super().__init__(message)
+        super().__init__(message, details=details)
         self.error_code = error_code
         self.phase = phase
         self.cause = cause
@@ -239,17 +246,28 @@ class Limits(StrictModel):
 async def transfer_deadline(seconds: int, phase: str) -> AsyncIterator[asyncio.Timeout]:
     """Normalize only this stage's expired deadline; preserve external cancellation."""
     deadline = asyncio.timeout(seconds)
+    started = time.monotonic()
     try:
         async with deadline:
             yield deadline
     except TimeoutError:
         if not deadline.expired():
             raise
+        facts = {
+            "elapsed_ms": min(3600000, round((time.monotonic() - started) * 1000)),
+            "configured_wait_ms": seconds * 1000,
+        }
         raise BrowserFailure(
             "File transfer stage timed out; inspect this operation before recovery",
             "transfer_timeout",
             phase,
-            cause=FailureCause(code="transfer_timeout", exception_type="Exception"),
+            cause=FailureCause(
+                code="transfer_timeout",
+                exception_type="TimeoutError",
+                elapsed_ms=facts["elapsed_ms"],
+                configured_wait_ms=facts["configured_wait_ms"],
+            ),
+            details={**facts},
         ) from None
 
 
