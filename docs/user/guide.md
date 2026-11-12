@@ -26,6 +26,12 @@ searching and editing files.
 Actual Python package availability depends on your instance. The assistant should
 report a missing package rather than pretend that a file was created.
 
+An indexing warning concerns Open WebUI's extracted text, not necessarily the
+original file. If the attachment remains in the chat, the assistant may still use
+its raw bytes through this Tool, subject to current permissions and limits. It
+should check the appropriate file operation before claiming the attachment cannot
+be read.
+
 ## Download and share results
 
 The assistant should include a download link in its answer. Click that link to

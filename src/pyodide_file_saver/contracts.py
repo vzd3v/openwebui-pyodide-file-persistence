@@ -8,13 +8,23 @@ import binascii
 import hashlib
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    model_serializer,
+    model_validator,
+)
 
 HOST_SOCKET_LIMIT = 16 * 1024 * 1024
 FILENAME_BYTES = 180
@@ -35,6 +45,7 @@ class FailureCause(BaseModel):
     code: Literal[
         "snapshot_exception",
         "callback_limit",
+        "callback_timeout",
         "restore_changed",
         "workspace_changed",
         "invalid_path",
@@ -62,11 +73,34 @@ class FailureCause(BaseModel):
         "RuntimeError",
         "TypeError",
         "MemoryError",
+        "TimeoutError",
         "Exception",
     ] = "Exception"
     frame: Literal["managed_workspace", ""] = ""
     line: int = Field(default=0, ge=0, le=10000)
     http_status: int = Field(default=0, ge=0, le=599)
+    observed: int | None = Field(default=None, ge=0, le=2**53 - 1)
+    limit: int | None = Field(default=None, ge=0, le=2**53 - 1)
+    measurement: Literal["exact", "lower_bound"] | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0, le=3600000)
+    configured_wait_ms: int | None = Field(default=None, ge=0, le=3600000)
+
+    @model_validator(mode="after")
+    def complete_measurement(self) -> FailureCause:
+        values = (self.observed, self.limit, self.measurement)
+        if any(value is not None for value in values) and any(value is None for value in values):
+            raise ValueError("Diagnostic measurements require observed, limit and measurement")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_unobserved_facts(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+        value = JSON_VALUE.validate_python(handler(self))
+        if not isinstance(value, dict):
+            raise TypeError("Invalid diagnostic serialization")
+        # Also applies inside OperationDiagnostics.model_dump_json(). A reader-only
+        # upgrade must not introduce new null fields into otherwise legacy events.
+        optional = {"observed", "limit", "measurement", "elapsed_ms", "configured_wait_ms"}
+        return {key: item for key, item in value.items() if key not in optional or item is not None}
 
 
 class SaverError(Exception):
@@ -88,9 +122,15 @@ class BrowserFailure(SaverError):
     """Classified callback failure without copying host or browser error text."""
 
     def __init__(
-        self, message: str, error_code: str, phase: str, *, cause: FailureCause | None = None
+        self,
+        message: str,
+        error_code: str,
+        phase: str,
+        *,
+        cause: FailureCause | None = None,
+        details: dict[str, JsonValue] | None = None,
     ):
-        super().__init__(message)
+        super().__init__(message, details=details)
         self.error_code = error_code
         self.phase = phase
         self.cause = cause
@@ -206,17 +246,28 @@ class Limits(StrictModel):
 async def transfer_deadline(seconds: int, phase: str) -> AsyncIterator[asyncio.Timeout]:
     """Normalize only this stage's expired deadline; preserve external cancellation."""
     deadline = asyncio.timeout(seconds)
+    started = time.monotonic()
     try:
         async with deadline:
             yield deadline
     except TimeoutError:
         if not deadline.expired():
             raise
+        facts = {
+            "elapsed_ms": min(3600000, round((time.monotonic() - started) * 1000)),
+            "configured_wait_ms": seconds * 1000,
+        }
         raise BrowserFailure(
             "File transfer stage timed out; inspect this operation before recovery",
             "transfer_timeout",
             phase,
-            cause=FailureCause(code="transfer_timeout", exception_type="Exception"),
+            cause=FailureCause(
+                code="transfer_timeout",
+                exception_type="TimeoutError",
+                elapsed_ms=facts["elapsed_ms"],
+                configured_wait_ms=facts["configured_wait_ms"],
+            ),
+            details={**facts},
         ) from None
 
 

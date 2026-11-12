@@ -21,6 +21,8 @@ from .contracts import (
     BrowserFailure,
     ExecutionBlocked,
     InputOrigin,
+    Limits,
+    Receipt,
     SaverError,
 )
 
@@ -62,6 +64,53 @@ WORKSPACE_CAPABILITIES: dict[str, JsonValue] = {
     ),
     "retained_state": "Use scripts/state/ for persistent data; import names in every Python call.",
 }
+
+
+def acknowledged_capacity(head: Receipt | None, limits: Limits) -> dict[str, JsonValue]:
+    """Policy accounting from immutable metadata, without probing the live browser or storage."""
+    result: dict[str, JsonValue] = {
+        "basis": "acknowledged_head",
+        "head_operation_id": head.operation_id if head else None,
+        "live_pending_state": "not_measured",
+        "instructions": (
+            "Committed metadata only, not current file availability, pending browser files, "
+            "scratch usage or device RAM. Retained count includes private run-record paths."
+        ),
+    }
+    if head is None:
+        result.update(state="no_acknowledged_head", retained=None, inputs=None)
+        return result
+    retained = head.blobs if head.checkpoint_version == 2 else head.files
+    internal = sum(
+        bool(
+            re.fullmatch(
+                r"scripts/\.runs(?:-current)*/latest(?:-current)*/(?:source\.(?:py|sh)|record\.json)",
+                slot.path,
+            )
+        )
+        for slot in retained
+    )
+    result["state"] = "acknowledged"
+    for name, slots, maximum in (
+        ("retained", retained, limits.max_total_bytes),
+        ("inputs", head.inputs, limits.max_input_bytes),
+    ):
+        size = sum(slot.size for slot in slots)
+        value: dict[str, JsonValue] = {
+            "count": len(slots),
+            "bytes": size,
+            "remaining_count": max(0, limits.max_files - len(slots)),
+            "remaining_bytes": max(0, maximum - size),
+            "within_current_policy": len(slots) <= limits.max_files
+            and size <= maximum
+            and all(slot.size <= limits.max_file_bytes for slot in slots),
+        }
+        if name == "retained":
+            value["run_record_count_included"] = internal
+        result[name] = value
+    return result
+
+
 FAILURE_FRAMES = frozenset(
     {
         "execute_code",

@@ -29,6 +29,17 @@ server task UUID and validates any stored message task; absent task IDs use a
 conservative actor/chat/assistant-message gate. Session guards are actor-scoped;
 model arguments cannot reset them or reconnect an old request.
 
+`capacity` describes only the acknowledged head identified by `head_operation_id`.
+It reports `retained` and `inputs` counts, bytes, remaining count/bytes and
+`within_current_policy` separately. Retained count includes private run records;
+`run_record_count_included` identifies those automatic paths. Version-one heads
+use their saved file list, including grandfathered copies; version-two heads use
+retained blobs and separate input references. No acknowledged head returns
+`state: no_acknowledged_head` and unknown totals, rather than claiming an empty
+live browser. Capacity does not inspect current availability, pending changes,
+scratch usage or free RAM. Remaining slots do not reserve space for a future
+program or promise that all other policies permit it.
+
 Completed, uncheckpointed current-revision operations also fence new execution
 with `execution_recovery_required`; completion evidence stays truthful. A first
 fenced execute commits a request latch and returns `first_refusal=true` recovery
@@ -96,11 +107,27 @@ source and locals. Diagnostics preserve the first recorded failure separately
 from the latest attempt, with event timestamps independent of receipt update time.
 Older records without a failure timestamp keep that time unknown.
 
+Known retained-limit causes include bounded `observed`, `limit` and `measurement`.
+`exact` describes the observed file size; `lower_bound` means a count or aggregate
+scan stopped at its first refusal, so the complete pending total can be larger.
+The completed-but-unsaved explanation names the relevant Valve and same-operation
+source-free recovery after policy review; repeating recovery unchanged cannot
+repair that refusal. Older causes without numeric evidence keep those facts unknown.
+The native fallback uses the allowlisted interface language (`ru`/`ru-RU`, otherwise
+English) from injected `variables["{{USER_LANGUAGE}}"]`. The assistant should
+explain the typed facts in the current request language. No extra model is called;
+disconnection, a stale generation or failed persistence can still prevent delivery.
+
 The backend emits correlated `invocation_started`/`invocation_finished` metadata
 with the Tool release, trusted chat/message/task identifiers when available,
 optional operation ID, duration and separate outcomes. It excludes source, file
 bytes, rejected values and raw exception messages. Bounded program stdout/stderr
 remain in the existing protected receipt rather than operational log events.
+`browser_phase_finished` records callback `elapsed_ms`, `configured_wait_ms` and
+`outcome`; `received` means a callback returned, not that its workspace result
+passed validation. Callback and aggregate transfer timeout causes retain their
+elapsed/configured waits. These clocks do not measure Python CPU time, prove
+worker termination or diagnose a network cause by duration alone.
 
 `recovery_plan` derives instructions from retained evidence. Its `execution` is
 `not_started` for a recorded pre-dispatch failure, `unknown` when execution might

@@ -411,8 +411,8 @@ def test_native_stop_is_opt_in_and_missing_capability_prevents_dispatch(
             final_error = persisted[-1]["error"]
             assert isinstance(final_error, dict)
             assert final_error["type"] == "workspace_recovery_required"
-            assert "saving limit" in str(final_error["content"])
-            assert "cleanup or resizing" in str(final_error["content"])
+            assert "max_file_bytes" in str(final_error["content"])
+            assert "cleanup/resizing" in str(final_error["content"])
             assert "unavailable" not in str(final_error["content"])
             assert len(await adapter.state.pending(host.context)) == 1
             saved_notice = await adapter.persist_stop(

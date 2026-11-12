@@ -18,6 +18,7 @@ from .contracts import (
     BoundContext,
     BrowserFailure,
     ExecutionBlocked,
+    FailureCause,
     LanguageName,
     Limits,
     Receipt,
@@ -31,6 +32,7 @@ from .contracts import (
 )
 from .openwebui_adapter import OpenWebUIAdapter, require_string
 from .tool_results import (
+    acknowledged_capacity,
     correctable_refusal,
     exception_diagnostic,
     refusal_origin,
@@ -40,7 +42,12 @@ from .tool_results import (
 )
 from .workspace_execution import execute_workspace, verify_manifest
 from .workspace_manifest import manifest_bytes, parse_manifest, retained_ready
-from .workspace_recovery import recovery_plan
+from .workspace_recovery import (
+    RETAINED_LIMIT_POLICIES,
+    recovery_plan,
+    retained_limit_message,
+    ui_locale,
+)
 from .workspace_transfer import reconcile_native_uploads
 
 EventCall = Callable[[dict[str, JsonValue]], Awaitable[object]]
@@ -332,7 +339,8 @@ class Tools:
 
         Each Python call has fresh globals: import names again or run a saved script.
         Before creating large or many retained files, use status with no code to
-        inspect current limits and estimate output sizes. Do not create files above them.
+        inspect current limits and acknowledged capacity, including private run records.
+        Estimate sizes/counts first; capacity does not measure pending files or free RAM.
         If execution completed but saving failed, ANY new execute is forbidden,
         including deleting, resizing or repacking its outputs. Follow recovery_plan
         or explain the limit; do not try a cleanup program in the fenced workspace.
@@ -355,9 +363,8 @@ class Tools:
         Bash provides jq, rg, find, head, tail, sed, awk and ordinary file commands;
         use Python for Pyodide packages. Each shell call has a fresh environment. Warm workers
         can retain installed packages, but a fresh browser does not reinstall them.
-        Static Python imports provide host package-loading hints; dynamic import
-        probes do not. Native subprocesses, threads and network shell commands are
-        unavailable. Bounded logs remain transient under work/;
+        Static outer imports request packages from the Pyodide catalog before execution;
+        hidden or dynamic imports do not. Bounded logs remain transient under work/;
         returned text is bounded with truncation flags and an exit code.
         Empty retained files require native local storage; remote providers do not
         support the native metadata-backed empty File lifecycle.
@@ -375,7 +382,6 @@ class Tools:
         even after reconnect or a new message. Lost browser bytes,
         scratch, variables and packages cannot be restored. Keep essential intermediate
         data in scripts/state/ and load permitted dependencies before running saved source.
-        Static imports load packages from this runtime's Pyodide catalog before execution.
         Saved scripts require explicit outer imports or approved explicit package loading.
         input_file_ids selects only current attachments: omit it to admit all, or [] to
         admit none. Previously acknowledged inputs remain required and access-checked.
@@ -383,7 +389,7 @@ class Tools:
 
         :param code: Python or shell source for execute; write issued documents in outputs/.
         :param action: execute, retry, recover or status (includes current limits; no code).
-        :param operation_id: Server-issued saved operation ID for retry or specific status.
+        :param operation_id: Server-issued saved operation ID for retry, recover or specific status.
         :param language: python or bash (browser just-bash; no native OS processes).
         :param input_file_ids: Current attachment IDs for execute; [] selects no new inputs.
         """
@@ -462,6 +468,8 @@ class Tools:
                         "limit_count",
                         "count",
                         "input_origin",
+                        "elapsed_ms",
+                        "configured_wait_ms",
                     )
                     if key in details
                 }
@@ -544,6 +552,7 @@ class Tools:
                             ],
                             "recoverable_truncated": len(recoverable) > 32,
                             "availability": "not_rechecked",
+                            "capacity": acknowledged_capacity(head, limits),
                             "instructions": (
                                 "Receipts record past acknowledgements, not current availability. "
                                 "Bytes, destinations or grants may have been deleted or revoked. "
@@ -595,7 +604,7 @@ class Tools:
                     blocked_modules,
                     (__metadata__ or {}).get("session_id"),
                     recovering=call.action == "recover",
-                    metadata=__metadata__ or {},
+                    metadata={**(__metadata__ or {}), "workspace_invocation_id": invocation_id},
                 )
                 receipt = await resume_publication(
                     adapter, context, receipt.operation_id, limits, read_blobs=False
@@ -796,6 +805,20 @@ class Tools:
                     result["permitted_actions"] = plan["tool_actions"]
                 except Exception:
                     result["receipt_unavailable"] = True
+            recorded = result.get("receipt")
+            if (
+                isinstance(recorded, dict)
+                and recorded.get("execution_completed") is True
+                and recorded.get("workspace_saved") is not True
+            ):
+                recorded_cause = recorded.get("cause")
+                if (
+                    isinstance(recorded_cause, dict)
+                    and recorded_cause.get("code") in RETAINED_LIMIT_POLICIES
+                ):
+                    detail = retained_limit_message(
+                        FailureCause.model_validate(recorded_cause), ui_locale(__metadata__ or {})
+                    )
             result = tool_result(result, error_code=error_code, message=detail)
             if (
                 stop_ready

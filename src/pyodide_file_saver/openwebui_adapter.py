@@ -38,6 +38,7 @@ from .contracts import (
     safe_filename,
 )
 from .workspace_manifest import retained_ready
+from .workspace_recovery import native_failure_message, ui_locale
 from .workspace_state import WorkspaceState
 
 
@@ -539,43 +540,14 @@ class OpenWebUIAdapter:
         diagnostic: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         receipt = diagnostic.get("receipt")
-        not_started = (
-            isinstance(receipt, dict) and receipt.get("execution_outcome") == "not_started"
-        )
         completed_unsaved = (
             isinstance(receipt, dict)
             and receipt.get("execution_completed") is True
             and receipt.get("workspace_saved") is not True
         )
-        cause = receipt.get("cause") if isinstance(receipt, dict) else None
-        save_limit = isinstance(cause, dict) and cause.get("code") in {
-            "retained_file_limit",
-            "retained_total_limit",
-            "retained_count_limit",
-        }
-        if completed_unsaved:
-            content = (
-                "The program finished, but retained files exceed a saving limit. "
-                if save_limit
-                else "The program finished, but its files could not be saved. "
-            ) + (
-                "New execution, including cleanup or resizing, is blocked. "
-                "Inspect status and the recovery plan; do not rerun the program."
-            )
-        elif not_started:
-            content = (
-                "The program did not start. Inspect operation status and follow its recovery plan."
-            )
-        elif isinstance(receipt, dict) and receipt.get("workspace_saved") is True:
-            content = (
-                "Existing results are saved, but further execution is blocked in this request "
-                "or browser session. Inspect status and follow its recovery plan."
-            )
-        else:
-            content = (
-                "The execution outcome is unresolved; the program may still be running. "
-                "Keep the original tab, inspect status and do not rerun the program."
-            )
+        content = native_failure_message(
+            receipt if isinstance(receipt, dict) else {}, ui_locale(metadata)
+        )
         error: dict[str, JsonValue] = {
             "content": content,
             "type": "workspace_recovery_required"

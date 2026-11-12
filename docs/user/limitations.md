@@ -52,10 +52,13 @@ outcome unknown. Results include a `recovery_plan` with the applicable next step
 
 Known-completed work without an acknowledged checkpoint blocks new programs with
 `execution_recovery_required`, preserving its pending root and completion evidence.
-Use recover before reloading/closing the tab. If retained bytes exceed the limits,
-recovery still needs an administrator-approved decoded-byte limit change within native storage policy,
-or an explicitly chosen new-chat computation. The Tool has no pending-root edit,
-discard, historical inventory or export API.
+If saving exceeds a retained file-count or byte limit, repeating recovery with
+unchanged limits will fail again. Keep the original tab open and ask an
+administrator to review the reported limit. After an approved compatible policy
+change, use recover with the same operation ID and no code. Do not execute cleanup
+or resizing in the fenced workspace. Increasing a limit cannot recreate a lost
+runtime or unsaved bytes, or bypass another limit or access check. The Tool has
+no pending-root edit, discard, historical inventory or export API.
 
 A timeout never guarantees worker termination or exactly-once effects for
 arbitrary Python. The Tool blocks further execution for a failed request and an
